@@ -9,14 +9,17 @@ use gpui::{
 use gpui_component::{
     Selectable as _, Sizable as _,
     button::{Button, ButtonVariants as _},
+    calendar::Date as PickerDate,
     checkbox::Checkbox,
+    date_picker::{DatePicker, DatePickerEvent, DatePickerState},
     input::{Input, InputEvent, InputState},
     menu::{ContextMenuExt as _, PopupMenuItem},
     progress::Progress,
     resizable::{ResizableState, h_resizable, resizable_panel},
     scroll::ScrollableElement as _,
+    select::{Select, SelectEvent, SelectState},
 };
-use time::{Date, OffsetDateTime, PrimitiveDateTime, UtcOffset, macros::format_description};
+use time::{Date, OffsetDateTime, PrimitiveDateTime, Time, UtcOffset, macros::format_description};
 
 use crate::{
     application::{HistoryEntry, TaskApplication},
@@ -29,6 +32,10 @@ use crate::{
 };
 
 use super::theme;
+
+const CALENDAR_DAY_CELL_HEIGHT: f32 = 104.0;
+const CALENDAR_WEEKDAY_HEIGHT: f32 = 28.0;
+const CALENDAR_GRID_MIN_HEIGHT: f32 = CALENDAR_DAY_CELL_HEIGHT * 6.0 + CALENDAR_WEEKDAY_HEIGHT;
 
 gpui::actions!(
     hodoq,
@@ -49,7 +56,6 @@ gpui::actions!(
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SmartView {
-    Inbox,
     Today,
     Upcoming,
     Overdue,
@@ -75,10 +81,8 @@ enum CalendarMode {
 enum PaletteCommand {
     NewTask,
     Search,
-    Inbox,
     Today,
     All,
-    StatusInbox,
     StatusTodo,
     StatusDoing,
     StatusBlocked,
@@ -96,6 +100,27 @@ enum PendingConfirmation {
     EmptyTrash,
     Restore(PathBuf),
     CloseSaveFailed,
+}
+
+#[derive(Debug, Clone)]
+struct NewTaskDraft {
+    status: TaskStatus,
+    priority: Priority,
+    progress: u8,
+    project_id: Option<ProjectId>,
+    tag_ids: Vec<TagId>,
+}
+
+impl Default for NewTaskDraft {
+    fn default() -> Self {
+        Self {
+            status: TaskStatus::Todo,
+            priority: Priority::None,
+            progress: 0,
+            project_id: None,
+            tag_ids: Vec::new(),
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -153,9 +178,9 @@ pub(super) struct Workspace {
     calendar_mode: CalendarMode,
     calendar_month: Date,
     selection_mode: bool,
+    new_task_draft: Option<NewTaskDraft>,
     show_more_menu: bool,
     show_all_smart_views: bool,
-    show_task_editor_details: bool,
     show_filter_panel: bool,
     show_data_panel: bool,
     show_command_palette: bool,
@@ -172,12 +197,13 @@ pub(super) struct Workspace {
     discard_unsaved_on_close: bool,
     status_message: String,
     error_message: Option<String>,
-    new_task_input: Entity<InputState>,
     search_input: Entity<InputState>,
     command_input: Entity<InputState>,
     title_input: Entity<InputState>,
     memo_input: Entity<InputState>,
     due_input: Entity<InputState>,
+    due_date_picker: Entity<DatePickerState>,
+    due_time_select: Entity<SelectState<Vec<String>>>,
     progress_input: Entity<InputState>,
     project_input: Entity<InputState>,
     project_description_input: Entity<InputState>,
@@ -205,8 +231,6 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let new_task_input =
-            cx.new(|cx| InputState::new(window, cx).placeholder("タスク名を入力して保存"));
         let search_input =
             cx.new(|cx| InputState::new(window, cx).placeholder("タイトル・メモを検索"));
         let command_input = cx.new(|cx| {
@@ -221,6 +245,12 @@ impl Workspace {
         let due_input = cx.new(|cx| {
             InputState::new(window, cx).placeholder("未定 / YYYY-MM-DD / YYYY-MM-DD HH:MM")
         });
+        let due_date_picker = cx.new(|cx| {
+            DatePickerState::new(window, cx)
+                .date_format("")
+                .number_of_months(1)
+        });
+        let due_time_select = cx.new(|cx| SelectState::new(due_time_options(), None, window, cx));
         let progress_input = cx.new(|cx| InputState::new(window, cx).placeholder("進捗 0〜100"));
         let project_input =
             cx.new(|cx| InputState::new(window, cx).placeholder("新しいプロジェクト"));
@@ -247,15 +277,6 @@ impl Workspace {
         let sidebar_resize_state = cx.new(|_| ResizableState::default());
 
         let _subscriptions = vec![
-            cx.subscribe_in(
-                &new_task_input,
-                window,
-                |this, _, event: &InputEvent, window, cx| {
-                    if matches!(event, InputEvent::PressEnter { .. }) {
-                        this.create_task(window, cx);
-                    }
-                },
-            ),
             cx.subscribe(&search_input, |_, _, event: &InputEvent, cx| {
                 if matches!(event, InputEvent::Change) {
                     cx.notify();
@@ -277,11 +298,38 @@ impl Workspace {
                 }
             }),
             cx.subscribe_in(
+                &due_date_picker,
+                window,
+                |this, _, event: &DatePickerEvent, window, cx| {
+                    let DatePickerEvent::Change(date) = event;
+                    let current = this.due_input.read(cx).value().to_string();
+                    let value = picker_due_input_value(*date, &current);
+                    this.due_input.update(cx, |state, cx| {
+                        state.set_value(value.clone(), window, cx);
+                    });
+                    if this.selected_task.is_some() {
+                        this.update_selected_due(&value, cx);
+                    } else {
+                        this.error_message = None;
+                        cx.notify();
+                    }
+                },
+            ),
+            cx.subscribe_in(
+                &due_time_select,
+                window,
+                |this, _, event: &SelectEvent<Vec<String>>, window, cx| {
+                    let SelectEvent::Confirm(value) = event;
+                    this.apply_due_time_selection(value.as_deref(), window, cx);
+                },
+            ),
+            cx.subscribe_in(
                 &due_input,
                 window,
-                |this, state, event: &InputEvent, _window, cx| {
+                |this, state, event: &InputEvent, window, cx| {
                     if matches!(event, InputEvent::PressEnter { .. }) {
-                        this.update_selected_due(state.read(cx).value().as_str(), cx);
+                        let value = state.read(cx).value().to_string();
+                        this.update_due_from_input(&value, window, cx);
                     }
                 },
             ),
@@ -392,7 +440,7 @@ impl Workspace {
                     && task.status != TaskStatus::Archived
                     && due_is_today(&task.due, today, offset)
             }) {
-            SmartView::Inbox
+            SmartView::All
         } else {
             smart_view_from_setting(&settings.active_view)
         };
@@ -425,7 +473,7 @@ impl Workspace {
                 saved.sort.iter().copied().take(2).collect()
             };
             initial_group_by = saved.group_by;
-            initial_filter_statuses = saved.filter.statuses.iter().copied().collect();
+            initial_filter_statuses = normalized_statuses(&saved.filter.statuses);
             initial_filter_priorities = saved.filter.priorities.iter().copied().collect();
             initial_filter_projects = saved.filter.project_ids.iter().copied().collect();
             initial_filter_unassigned_project = saved.filter.unassigned_project;
@@ -526,9 +574,9 @@ impl Workspace {
             calendar_mode: CalendarMode::Month,
             calendar_month,
             selection_mode: false,
+            new_task_draft: None,
             show_more_menu: false,
             show_all_smart_views: false,
-            show_task_editor_details: false,
             show_filter_panel: false,
             show_data_panel: false,
             show_command_palette: false,
@@ -549,12 +597,13 @@ impl Workspace {
                 "保存済み".to_owned()
             },
             error_message: startup_warning,
-            new_task_input,
             search_input,
             command_input,
             title_input,
             memo_input,
             due_input,
+            due_date_picker,
+            due_time_select,
             progress_input,
             project_input,
             project_description_input,
@@ -739,10 +788,71 @@ impl Workspace {
         cx.notify();
     }
 
-    fn create_task(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let title = self.new_task_input.read(cx).value().to_string();
-        match Task::new(title, OffsetDateTime::now_utc()) {
+    fn open_new_task_form(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.selected_task.is_some() {
+            self.flush_pending_edits(cx);
+        }
+        self.selected_task = None;
+        self.new_task_draft = Some(NewTaskDraft::default());
+        self.title_input
+            .update(cx, |state, cx| state.set_value("", window, cx));
+        self.memo_input
+            .update(cx, |state, cx| state.set_value("", window, cx));
+        self.due_input
+            .update(cx, |state, cx| state.set_value("", window, cx));
+        self.due_date_picker.update(cx, |state, cx| {
+            state.set_date(PickerDate::Single(None), window, cx);
+        });
+        self.due_time_select.update(cx, |state, cx| {
+            state.set_selected_index(None, window, cx);
+        });
+        self.progress_input
+            .update(cx, |state, cx| state.set_value("0", window, cx));
+        self.error_message = None;
+        self.title_input.read(cx).focus_handle(cx).focus(window);
+        cx.notify();
+    }
+
+    fn close_task_form(&mut self, cx: &mut Context<Self>) {
+        if self.selected_task.is_some() {
+            self.flush_pending_edits(cx);
+        }
+        self.selected_task = None;
+        self.new_task_draft = None;
+        cx.notify();
+    }
+
+    fn create_task(&mut self, cx: &mut Context<Self>) -> bool {
+        let Some(draft) = self.new_task_draft.clone() else {
+            return false;
+        };
+        let now = OffsetDateTime::now_utc();
+        let title = self.title_input.read(cx).value().to_string();
+        let due = match parse_due(self.due_input.read(cx).value().as_str()) {
+            Ok(due) => due,
+            Err(message) => {
+                self.error_message = Some(message);
+                cx.notify();
+                return false;
+            }
+        };
+        let progress = match self.progress_input.read(cx).value().trim().parse::<u8>() {
+            Ok(progress) if progress <= 100 => progress,
+            _ => {
+                self.error_message = Some("進捗は0〜100の整数で入力してください".to_owned());
+                cx.notify();
+                return false;
+            }
+        };
+        match Task::new(title, now) {
             Ok(mut task) => {
+                task.memo = self.memo_input.read(cx).value().to_string();
+                task.set_status(draft.status, now);
+                task.priority = draft.priority;
+                let _ = task.set_progress(progress);
+                task.due = due;
+                task.project_id = draft.project_id;
+                task.tag_ids = draft.tag_ids;
                 task.sort_order = self
                     .tasks
                     .iter()
@@ -752,23 +862,80 @@ impl Workspace {
                     + 1024;
                 if let Err(error) = self.worker.save_task(task.clone()) {
                     self.set_error(error);
-                    return;
+                    cx.notify();
+                    return false;
                 }
                 self.push_task_history(vec![(None, Some(task.clone()))]);
-                self.selected_task = Some(task.id);
                 self.tasks.push(task);
-                self.new_task_input.update(cx, |state, cx| {
-                    state.set_value("", window, cx);
-                });
-                self.sync_detail_inputs(window, cx);
+                self.new_task_draft = None;
                 self.status_message = "新しいタスクを保存しました".to_owned();
+                self.error_message = None;
                 cx.notify();
+                true
             }
             Err(error) => {
                 self.error_message = Some(error.to_string());
                 cx.notify();
+                false
             }
         }
+    }
+
+    fn set_new_task_status(
+        &mut self,
+        status: TaskStatus,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(draft) = self.new_task_draft.as_mut() else {
+            return;
+        };
+        if status == TaskStatus::Done {
+            draft.progress = 100;
+        } else if draft.status == TaskStatus::Done {
+            draft.progress = 0;
+        }
+        draft.status = status;
+        let progress = draft.progress.to_string();
+        self.progress_input
+            .update(cx, |state, cx| state.set_value(progress, window, cx));
+        cx.notify();
+    }
+
+    fn set_new_task_priority(&mut self, priority: Priority, cx: &mut Context<Self>) {
+        if let Some(draft) = self.new_task_draft.as_mut() {
+            draft.priority = priority;
+            cx.notify();
+        }
+    }
+
+    fn set_new_task_progress(&mut self, progress: u8, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(draft) = self.new_task_draft.as_mut() {
+            draft.progress = progress;
+            self.progress_input.update(cx, |state, cx| {
+                state.set_value(progress.to_string(), window, cx);
+            });
+            cx.notify();
+        }
+    }
+
+    fn set_new_task_project(&mut self, project_id: Option<ProjectId>, cx: &mut Context<Self>) {
+        if let Some(draft) = self.new_task_draft.as_mut() {
+            draft.project_id = project_id;
+            cx.notify();
+        }
+    }
+
+    fn toggle_new_task_tag(&mut self, tag_id: TagId, cx: &mut Context<Self>) {
+        let Some(draft) = self.new_task_draft.as_mut() else {
+            return;
+        };
+        if draft.tag_ids.contains(&tag_id) {
+            draft.tag_ids.retain(|id| *id != tag_id);
+        } else {
+            draft.tag_ids.push(tag_id);
+        }
+        cx.notify();
     }
 
     fn duplicate_task(&mut self, id: TaskId, cx: &mut Context<Self>) {
@@ -1179,7 +1346,6 @@ impl Workspace {
 
     fn saved_base_view(&self) -> Option<SavedBaseView> {
         match self.active_view {
-            SmartView::Inbox => Some(SavedBaseView::Inbox),
             SmartView::Today => Some(SavedBaseView::Today),
             SmartView::Upcoming => Some(SavedBaseView::Upcoming),
             SmartView::Overdue => Some(SavedBaseView::Overdue),
@@ -1698,7 +1864,7 @@ impl Workspace {
             self.flush_pending_edits(cx);
         }
         self.selected_task = Some(id);
-        self.show_task_editor_details = false;
+        self.new_task_draft = None;
         self.selection_anchor = Some(id);
         self.sync_detail_inputs(window, cx);
         cx.notify();
@@ -1917,6 +2083,7 @@ impl Workspace {
         let Some(task) = self.selected_task().cloned() else {
             return;
         };
+        let picker_date = picker_date_from_due(&task.due);
         self.title_input.update(cx, |state, cx| {
             state.set_value(task.title, window, cx);
         });
@@ -1926,6 +2093,10 @@ impl Workspace {
         self.due_input.update(cx, |state, cx| {
             state.set_value(format_due_input(&task.due), window, cx);
         });
+        self.due_date_picker.update(cx, |state, cx| {
+            state.set_date(picker_date, window, cx);
+        });
+        sync_due_time_select(&self.due_time_select, &task.due, window, cx);
         self.progress_input.update(cx, |state, cx| {
             state.set_value(task.progress.to_string(), window, cx);
         });
@@ -2012,6 +2183,43 @@ impl Workspace {
         }
     }
 
+    fn update_due_from_input(&mut self, value: &str, window: &mut Window, cx: &mut Context<Self>) {
+        self.update_selected_due(value, cx);
+        if let Ok(due) = parse_due(value) {
+            let picker_date = picker_date_from_due(&due);
+            self.due_date_picker.update(cx, |state, cx| {
+                state.set_date(picker_date, window, cx);
+            });
+            sync_due_time_select(&self.due_time_select, &due, window, cx);
+        }
+    }
+
+    fn apply_due_time_selection(
+        &mut self,
+        time: Option<&str>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let current = self.due_input.read(cx).value().to_string();
+        match due_input_with_time(&current, time) {
+            Ok(value) => {
+                self.due_input.update(cx, |state, cx| {
+                    state.set_value(value.clone(), window, cx);
+                });
+                if self.selected_task.is_some() {
+                    self.update_selected_due(&value, cx);
+                } else {
+                    self.error_message = None;
+                    cx.notify();
+                }
+            }
+            Err(message) => {
+                self.error_message = Some(message);
+                cx.notify();
+            }
+        }
+    }
+
     fn save_selected_task_form(&mut self, cx: &mut Context<Self>) -> bool {
         let Some(id) = self.selected_task else {
             return false;
@@ -2072,7 +2280,7 @@ impl Workspace {
             return false;
         }
         self.selected_task = None;
-        self.show_task_editor_details = false;
+        self.new_task_draft = None;
         cx.notify();
         true
     }
@@ -2310,7 +2518,6 @@ impl Workspace {
                     _ if task.deleted_at.is_some() => false,
                     SmartView::Archived => task.status == TaskStatus::Archived,
                     _ if task.status == TaskStatus::Archived => false,
-                    SmartView::Inbox => task.status == TaskStatus::Inbox,
                     SmartView::Today => due_is_today(&task.due, today, offset),
                     SmartView::Upcoming => due_is_upcoming(&task.due, today, offset),
                     SmartView::Overdue => {
@@ -2358,34 +2565,15 @@ impl Workspace {
                             .child("HodoQ"),
                     )
                     .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .gap_1()
-                            .child(
-                                div()
-                                    .text_size(px(12.0))
-                                    .font_weight(FontWeight::BOLD)
-                                    .text_color(theme::MUTED)
-                                    .child("新規タスク"),
-                            )
-                            .child(
-                                div()
-                                    .flex()
-                                    .items_center()
-                                    .gap_2()
-                                    .child(Input::new(&self.new_task_input).w(px(280.0)))
-                                    .child(
-                                        Button::new("add-task")
-                                            .primary()
-                                            .label("タスクを保存")
-                                            .on_click(move |_, window, cx| {
-                                                entity.update(cx, |this, cx| {
-                                                    this.create_task(window, cx);
-                                                });
-                                            }),
-                                    ),
-                            ),
+                        Button::new("open-new-task")
+                            .primary()
+                            .label("新規タスク")
+                            .selected(self.new_task_draft.is_some())
+                            .on_click(move |_, window, cx| {
+                                entity.update(cx, |this, cx| {
+                                    this.open_new_task_form(window, cx);
+                                });
+                            }),
                     )
                     .child(div().flex_1())
                     .child(Input::new(&self.search_input).cleanable(true).w(px(240.0)))
@@ -2519,14 +2707,8 @@ impl Workspace {
         let commands = [
             (PaletteCommand::NewTask, "新しいタスク", "新規 追加 task"),
             (PaletteCommand::Search, "タスクを検索", "検索 find search"),
-            (PaletteCommand::Inbox, "受信箱へ移動", "受信箱 inbox view"),
             (PaletteCommand::Today, "今日へ移動", "今日 today view"),
             (PaletteCommand::All, "すべてへ移動", "全部 all view"),
-            (
-                PaletteCommand::StatusInbox,
-                "選択タスクを受信箱へ",
-                "状態 inbox 受信箱",
-            ),
             (
                 PaletteCommand::StatusTodo,
                 "選択タスクを未着手へ",
@@ -2640,12 +2822,10 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         match command {
-            PaletteCommand::NewTask => self.new_task_input.read(cx).focus_handle(cx).focus(window),
+            PaletteCommand::NewTask => self.open_new_task_form(window, cx),
             PaletteCommand::Search => self.search_input.read(cx).focus_handle(cx).focus(window),
-            PaletteCommand::Inbox => self.active_view = SmartView::Inbox,
             PaletteCommand::Today => self.active_view = SmartView::Today,
             PaletteCommand::All => self.active_view = SmartView::All,
-            PaletteCommand::StatusInbox => self.set_selected_task_status(TaskStatus::Inbox, cx),
             PaletteCommand::StatusTodo => self.set_selected_task_status(TaskStatus::Todo, cx),
             PaletteCommand::StatusDoing => self.set_selected_task_status(TaskStatus::Doing, cx),
             PaletteCommand::StatusBlocked => self.set_selected_task_status(TaskStatus::Blocked, cx),
@@ -3402,7 +3582,6 @@ impl Workspace {
             })
             .count();
         let primary_views = [
-            (SmartView::Inbox, "受信箱".to_owned()),
             (SmartView::Today, format!("今日  {today_count}")),
             (SmartView::Upcoming, "今後7日".to_owned()),
             (SmartView::Overdue, format!("期限超過  {overdue_count}")),
@@ -3430,22 +3609,10 @@ impl Workspace {
             .gap_1()
             .child(
                 div()
-                    .flex()
-                    .items_center()
-                    .justify_between()
                     .pb_2()
-                    .child(
-                        div()
-                            .font_weight(FontWeight::BOLD)
-                            .text_color(theme::TEXT)
-                            .child("ナビゲーション"),
-                    )
-                    .child(
-                        div()
-                            .text_size(px(11.0))
-                            .text_color(theme::MUTED)
-                            .child("右端をドラッグ ↔"),
-                    ),
+                    .font_weight(FontWeight::BOLD)
+                    .text_color(theme::TEXT)
+                    .child("ナビゲーション"),
             )
             .child(section_label("スマートビュー"))
             .children(
@@ -3595,6 +3762,7 @@ impl Workspace {
                 entity.update(cx, |this, cx| {
                     this.active_view = view;
                     this.selected_task = None;
+                    this.new_task_draft = None;
                     this.sync_management_inputs(view, window, cx);
                     if let SmartView::Saved(id) = view
                         && let Some(saved) = this
@@ -3604,7 +3772,7 @@ impl Workspace {
                             .cloned()
                     {
                         this.view_kind = saved.view_kind;
-                        this.filter_statuses = saved.filter.statuses.iter().copied().collect();
+                        this.filter_statuses = normalized_statuses(&saved.filter.statuses);
                         this.filter_priorities = saved.filter.priorities.iter().copied().collect();
                         this.filter_projects = saved.filter.project_ids.iter().copied().collect();
                         this.filter_unassigned_project = saved.filter.unassigned_project;
@@ -3667,6 +3835,60 @@ impl Workspace {
             .into_any_element()
     }
 
+    fn render_due_control(&self) -> AnyElement {
+        div()
+            .debug_selector(|| "due-control".to_owned())
+            .flex()
+            .flex_col()
+            .gap_1()
+            .child(section_label("納期"))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .min_w_0()
+                    .rounded_md()
+                    .border_1()
+                    .border_color(theme::BORDER)
+                    .bg(theme::BACKGROUND)
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .child(Input::new(&self.due_input).appearance(false)),
+                    )
+                    .child(
+                        div()
+                            .w(px(42.0))
+                            .flex_shrink_0()
+                            .border_l_1()
+                            .border_color(theme::BORDER)
+                            .child(
+                                DatePicker::new(&self.due_date_picker)
+                                    .w_full()
+                                    .number_of_months(1)
+                                    .appearance(false)
+                                    .placeholder(""),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .w(px(96.0))
+                            .flex_shrink_0()
+                            .border_l_1()
+                            .border_color(theme::BORDER)
+                            .child(
+                                Select::new(&self.due_time_select)
+                                    .w_full()
+                                    .appearance(false)
+                                    .cleanable(true)
+                                    .placeholder("時刻"),
+                            ),
+                    ),
+            )
+            .into_any_element()
+    }
+
     fn render_content(&self, cx: &mut Context<Self>) -> AnyElement {
         let tasks = self.visible_tasks(cx);
         let view = match self.view_kind {
@@ -3680,337 +3902,7 @@ impl Workspace {
             .flex_1()
             .h_full()
             .min_h_0()
-            .when(self.selected_task.is_some(), |content| {
-                content.child(self.render_center_task_editor(cx))
-            })
             .child(view)
-            .into_any_element()
-    }
-
-    fn render_center_task_editor(&self, cx: &mut Context<Self>) -> AnyElement {
-        let Some(task) = self.selected_task().cloned() else {
-            return div().into_any_element();
-        };
-        let id = task.id;
-        div()
-            .flex()
-            .flex_col()
-            .flex_shrink_0()
-            .gap_3()
-            .px_4()
-            .py_3()
-            .bg(theme::SURFACE)
-            .border_b_1()
-            .border_color(theme::BORDER)
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap_3()
-                            .child(
-                                div()
-                                    .font_weight(FontWeight::BOLD)
-                                    .text_color(theme::TEXT)
-                                    .child("タスクを編集"),
-                            )
-                            .child(div().text_size(px(12.0)).text_color(theme::MUTED).child(
-                                format!(
-                                    "{} · 優先度 {} · {}%",
-                                    task.status.label(),
-                                    task.priority.label(),
-                                    task.progress
-                                ),
-                            )),
-                    )
-                    .child(self.small_action_button(
-                        "close-center-editor",
-                        "閉じる",
-                        cx,
-                        |this, _, cx| {
-                            this.flush_pending_edits(cx);
-                            this.selected_task = None;
-                            this.show_task_editor_details = false;
-                            cx.notify();
-                        },
-                    )),
-            )
-            .child(
-                div()
-                    .flex()
-                    .items_end()
-                    .gap_3()
-                    .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .flex_1()
-                            .gap_1()
-                            .child(
-                                div()
-                                    .text_size(px(12.0))
-                                    .text_color(theme::MUTED)
-                                    .child("タイトル"),
-                            )
-                            .child(Input::new(&self.title_input)),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .w(px(240.0))
-                            .gap_1()
-                            .child(
-                                div()
-                                    .text_size(px(12.0))
-                                    .text_color(theme::MUTED)
-                                    .child("納期"),
-                            )
-                            .child(Input::new(&self.due_input)),
-                    ),
-            )
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap_1()
-                    .child(
-                        div()
-                            .text_size(px(12.0))
-                            .text_color(theme::MUTED)
-                            .child("メモ"),
-                    )
-                    .child(Input::new(&self.memo_input).h(px(110.0))),
-            )
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .child({
-                        let entity = cx.entity();
-                        Button::new("save-center-editor")
-                            .primary()
-                            .label("変更を保存")
-                            .on_click(move |_, _, cx| {
-                                entity.update(cx, |this, cx| {
-                                    this.save_and_close_selected_task(cx);
-                                });
-                            })
-                    })
-                    .child({
-                        let entity = cx.entity();
-                        Button::new("toggle-center-editor-details")
-                            .small()
-                            .label(if self.show_task_editor_details {
-                                "詳細項目を閉じる"
-                            } else {
-                                "状態・優先度など"
-                            })
-                            .selected(self.show_task_editor_details)
-                            .on_click(move |_, _, cx| {
-                                entity.update(cx, |this, cx| {
-                                    this.show_task_editor_details = !this.show_task_editor_details;
-                                    cx.notify();
-                                });
-                            })
-                    })
-                    .child(
-                        div()
-                            .text_size(px(12.0))
-                            .text_color(theme::MUTED)
-                            .child("タイトルとメモは入力停止後にも自動保存されます"),
-                    ),
-            )
-            .when(self.show_task_editor_details, |editor| {
-                editor.child(self.render_center_task_details(id, &task, cx))
-            })
-            .into_any_element()
-    }
-
-    fn render_center_task_details(
-        &self,
-        id: TaskId,
-        task: &Task,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        div()
-            .flex()
-            .flex_col()
-            .gap_3()
-            .pt_2()
-            .border_t_1()
-            .border_color(theme::BORDER)
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .flex_wrap()
-                    .gap_2()
-                    .child(
-                        div()
-                            .text_size(px(12.0))
-                            .text_color(theme::MUTED)
-                            .child("状態"),
-                    )
-                    .children(
-                        TaskStatus::ALL
-                            .into_iter()
-                            .filter(|status| *status != TaskStatus::Archived)
-                            .map(|status| {
-                                let entity = cx.entity();
-                                Button::new(SharedString::from(format!(
-                                    "center-status-{}",
-                                    status.as_str()
-                                )))
-                                .small()
-                                .label(status.label())
-                                .selected(task.status == status)
-                                .on_click(move |_, _, cx| {
-                                    entity.update(cx, |this, cx| {
-                                        this.set_task_status(id, status, cx);
-                                    });
-                                })
-                            }),
-                    )
-                    .child(
-                        div()
-                            .ml_3()
-                            .text_size(px(12.0))
-                            .text_color(theme::MUTED)
-                            .child("優先度"),
-                    )
-                    .children(Priority::ALL.into_iter().map(|priority| {
-                        let entity = cx.entity();
-                        Button::new(SharedString::from(format!(
-                            "center-priority-{}",
-                            priority.as_str()
-                        )))
-                        .small()
-                        .label(priority.label())
-                        .selected(task.priority == priority)
-                        .on_click(move |_, _, cx| {
-                            entity.update(cx, |this, cx| {
-                                this.set_task_priority(id, priority, cx);
-                            });
-                        })
-                    })),
-            )
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .flex_wrap()
-                    .gap_2()
-                    .child(
-                        div()
-                            .text_size(px(12.0))
-                            .text_color(theme::MUTED)
-                            .child("進捗"),
-                    )
-                    .child(Input::new(&self.progress_input).w(px(90.0)))
-                    .children([0, 25, 50, 75, 100].into_iter().map(|progress| {
-                        let entity = cx.entity();
-                        Button::new(SharedString::from(format!("center-progress-{progress}")))
-                            .small()
-                            .label(format!("{progress}%"))
-                            .selected(task.progress == progress)
-                            .on_click(move |_, _, cx| {
-                                entity.update(cx, |this, cx| {
-                                    this.set_task_progress(id, progress, cx);
-                                });
-                            })
-                    }))
-                    .child(
-                        div()
-                            .ml_3()
-                            .text_size(px(12.0))
-                            .text_color(theme::MUTED)
-                            .child("プロジェクト"),
-                    )
-                    .child({
-                        let entity = cx.entity();
-                        Button::new("center-project-none")
-                            .small()
-                            .label("なし")
-                            .selected(task.project_id.is_none())
-                            .on_click(move |_, _, cx| {
-                                entity.update(cx, |this, cx| {
-                                    this.set_task_project(id, None, cx);
-                                });
-                            })
-                    })
-                    .children(self.projects.iter().map(|project| {
-                        let project_id = project.id;
-                        let entity = cx.entity();
-                        Button::new(SharedString::from(format!("center-project-{project_id}")))
-                            .small()
-                            .label(project.name.clone())
-                            .selected(task.project_id == Some(project_id))
-                            .on_click(move |_, _, cx| {
-                                entity.update(cx, |this, cx| {
-                                    this.set_task_project(id, Some(project_id), cx);
-                                });
-                            })
-                    })),
-            )
-            .when(!self.tags.is_empty(), |details| {
-                details.child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .flex_wrap()
-                        .gap_2()
-                        .child(
-                            div()
-                                .text_size(px(12.0))
-                                .text_color(theme::MUTED)
-                                .child("タグ"),
-                        )
-                        .children(self.tags.iter().map(|tag| {
-                            let tag_id = tag.id;
-                            let entity = cx.entity();
-                            Checkbox::new(SharedString::from(format!("center-tag-{tag_id}")))
-                                .label(tag.name.clone())
-                                .checked(task.tag_ids.contains(&tag_id))
-                                .on_click(move |_, _, cx| {
-                                    entity.update(cx, |this, cx| {
-                                        this.toggle_task_tag(id, tag_id, cx);
-                                    });
-                                })
-                        })),
-                )
-            })
-            .child(
-                div()
-                    .flex()
-                    .gap_2()
-                    .child({
-                        let entity = cx.entity();
-                        Button::new("center-archive-task")
-                            .small()
-                            .label("アーカイブ")
-                            .on_click(move |_, _, cx| {
-                                entity.update(cx, |this, cx| {
-                                    this.set_task_status(id, TaskStatus::Archived, cx);
-                                });
-                            })
-                    })
-                    .child({
-                        let entity = cx.entity();
-                        Button::new("center-trash-task")
-                            .small()
-                            .danger()
-                            .label("ゴミ箱へ")
-                            .on_click(move |_, _, cx| {
-                                entity.update(cx, |this, cx| this.move_to_trash(id, cx));
-                            })
-                    }),
-            )
             .into_any_element()
     }
 
@@ -4357,10 +4249,10 @@ impl Workspace {
                     Button::new(SharedString::from(format!("unarchive-{task_id}")))
                         .ghost()
                         .small()
-                        .label("受信箱へ")
+                        .label("未着手へ")
                         .on_click(move |_, _, cx| {
                             entity.update(cx, |this, cx| {
-                                this.set_task_status(task_id, TaskStatus::Inbox, cx);
+                                this.set_task_status(task_id, TaskStatus::Todo, cx);
                             });
                         }),
                 )
@@ -4421,7 +4313,7 @@ impl Workspace {
                 }))
                 .item(
                     PopupMenuItem::new(if task.status == TaskStatus::Archived {
-                        "受信箱へ戻す"
+                        "未着手へ戻す"
                     } else {
                         "アーカイブ"
                     })
@@ -4430,7 +4322,7 @@ impl Workspace {
                             this.set_task_status(
                                 task_id,
                                 if task.status == TaskStatus::Archived {
-                                    TaskStatus::Inbox
+                                    TaskStatus::Todo
                                 } else {
                                     TaskStatus::Archived
                                 },
@@ -4768,14 +4660,14 @@ impl Workspace {
             .filter(|task| matches!(task.due, Due::None))
             .cloned()
             .collect::<Vec<_>>();
-        let leading = first.weekday().number_days_from_monday() as usize;
+        let leading = calendar_leading_days(first);
         let days = first.month().length(first.year()) as usize;
         let mut cells = Vec::with_capacity(42);
         for cell in 0..42 {
             if cell < leading || cell >= leading + days {
                 cells.push(
                     div()
-                        .h(px(104.0))
+                        .h(px(CALENDAR_DAY_CELL_HEIGHT))
                         .border_1()
                         .border_color(theme::BORDER)
                         .bg(theme::BACKGROUND)
@@ -4801,7 +4693,7 @@ impl Workspace {
                     .flex()
                     .flex_col()
                     .gap_1()
-                    .h(px(104.0))
+                    .h(px(CALENDAR_DAY_CELL_HEIGHT))
                     .p_2()
                     .border_1()
                     .border_color(if date == today {
@@ -4860,24 +4752,27 @@ impl Workspace {
                     .into_any_element(),
             );
         }
-        let weekdays = ["月", "火", "水", "木", "金", "土", "日"];
+        let weekdays = ["日", "月", "火", "水", "木", "金", "土"];
         let calendar = div()
+            .debug_selector(|| "calendar-month-grid".to_owned())
             .flex()
             .flex_col()
-            .flex_1()
-            .min_h_0()
-            .overflow_y_scrollbar()
+            .flex_shrink_0()
+            .min_h(px(CALENDAR_GRID_MIN_HEIGHT))
             .child(
                 div()
                     .grid()
                     .grid_cols(7)
                     .children(weekdays.into_iter().enumerate().map(|(index, day)| {
                         div()
-                            .py_1()
+                            .h(px(CALENDAR_WEEKDAY_HEIGHT))
+                            .flex()
+                            .items_center()
+                            .justify_center()
                             .text_center()
                             .text_color(match index {
-                                5 => theme::ACCENT,
-                                6 => theme::DANGER,
+                                0 => theme::DANGER,
+                                6 => theme::ACCENT,
                                 _ => theme::MUTED,
                             })
                             .child(day)
@@ -4888,9 +4783,11 @@ impl Workspace {
             .flex()
             .flex_col()
             .flex_1()
+            .h_full()
             .min_h_0()
             .gap_3()
             .p_4()
+            .overflow_y_scrollbar()
             .child(calendar)
             .child(
                 div()
@@ -4954,7 +4851,194 @@ impl Workspace {
             .into_any_element()
     }
 
+    fn render_new_task_detail(&self, cx: &mut Context<Self>) -> AnyElement {
+        let Some(draft) = self.new_task_draft.clone() else {
+            return div().into_any_element();
+        };
+        div()
+            .id("new-task-detail-panel")
+            .flex()
+            .flex_col()
+            .flex_1()
+            .min_w_0()
+            .h_full()
+            .border_l_1()
+            .border_color(theme::BORDER)
+            .bg(theme::SURFACE)
+            .overflow_x_hidden()
+            .overflow_y_scrollbar()
+            .p_4()
+            .gap_4()
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .child(
+                        div()
+                            .text_size(px(18.0))
+                            .font_weight(FontWeight::BOLD)
+                            .child("新規タスク"),
+                    )
+                    .child(self.small_action_button(
+                        "close-new-task",
+                        "閉じる",
+                        cx,
+                        |this, _, cx| this.close_task_form(cx),
+                    )),
+            )
+            .child(labeled_input("タイトル", Input::new(&self.title_input)))
+            .child(labeled_input(
+                "メモ",
+                Input::new(&self.memo_input).h(px(160.0)),
+            ))
+            .child(self.render_due_control())
+            .child(section_label("状態"))
+            .child(
+                div().flex().flex_wrap().gap_2().children(
+                    TaskStatus::ALL
+                        .into_iter()
+                        .filter(|status| *status != TaskStatus::Archived)
+                        .map(|status| {
+                            let entity = cx.entity();
+                            Button::new(SharedString::from(format!(
+                                "new-status-{}",
+                                status.as_str()
+                            )))
+                            .small()
+                            .label(status.label())
+                            .selected(draft.status == status)
+                            .on_click(move |_, window, cx| {
+                                entity.update(cx, |this, cx| {
+                                    this.set_new_task_status(status, window, cx);
+                                });
+                            })
+                        }),
+                ),
+            )
+            .child(section_label("優先度"))
+            .child(
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .gap_2()
+                    .children(Priority::ALL.into_iter().map(|priority| {
+                        let entity = cx.entity();
+                        Button::new(SharedString::from(format!(
+                            "new-priority-{}",
+                            priority.as_str()
+                        )))
+                        .small()
+                        .label(priority.label())
+                        .selected(draft.priority == priority)
+                        .on_click(move |_, _, cx| {
+                            entity.update(cx, |this, cx| {
+                                this.set_new_task_priority(priority, cx);
+                            });
+                        })
+                    })),
+            )
+            .child(section_label("進捗"))
+            .child(Progress::new().value(f32::from(draft.progress)))
+            .child(labeled_input(
+                "直接入力（0〜100）",
+                Input::new(&self.progress_input),
+            ))
+            .child(
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .gap_2()
+                    .children([0, 25, 50, 75, 100].into_iter().map(|progress| {
+                        let entity = cx.entity();
+                        Button::new(SharedString::from(format!("new-progress-{progress}")))
+                            .small()
+                            .label(format!("{progress}%"))
+                            .selected(draft.progress == progress)
+                            .on_click(move |_, window, cx| {
+                                entity.update(cx, |this, cx| {
+                                    this.set_new_task_progress(progress, window, cx);
+                                });
+                            })
+                    })),
+            )
+            .child(section_label("プロジェクト"))
+            .child(
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .gap_2()
+                    .child({
+                        let entity = cx.entity();
+                        Button::new("new-project-none")
+                            .small()
+                            .label("なし")
+                            .selected(draft.project_id.is_none())
+                            .on_click(move |_, _, cx| {
+                                entity.update(cx, |this, cx| {
+                                    this.set_new_task_project(None, cx);
+                                });
+                            })
+                    })
+                    .children(self.projects.iter().map(|project| {
+                        let project_id = project.id;
+                        let entity = cx.entity();
+                        Button::new(SharedString::from(format!("new-project-{project_id}")))
+                            .small()
+                            .label(project.name.clone())
+                            .selected(draft.project_id == Some(project_id))
+                            .on_click(move |_, _, cx| {
+                                entity.update(cx, |this, cx| {
+                                    this.set_new_task_project(Some(project_id), cx);
+                                });
+                            })
+                    })),
+            )
+            .child(section_label("タグ"))
+            .child(
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .gap_2()
+                    .when(self.tags.is_empty(), |tags| {
+                        tags.child(
+                            div()
+                                .text_size(px(12.0))
+                                .text_color(theme::MUTED)
+                                .child("登録済みのタグはありません"),
+                        )
+                    })
+                    .children(self.tags.iter().map(|tag| {
+                        let tag_id = tag.id;
+                        let entity = cx.entity();
+                        Checkbox::new(SharedString::from(format!("new-tag-{tag_id}")))
+                            .label(tag.name.clone())
+                            .checked(draft.tag_ids.contains(&tag_id))
+                            .on_click(move |_, _, cx| {
+                                entity.update(cx, |this, cx| {
+                                    this.toggle_new_task_tag(tag_id, cx);
+                                });
+                            })
+                    })),
+            )
+            .child({
+                let entity = cx.entity();
+                Button::new("save-new-task")
+                    .primary()
+                    .label("タスクを保存")
+                    .on_click(move |_, _, cx| {
+                        entity.update(cx, |this, cx| {
+                            this.create_task(cx);
+                        });
+                    })
+            })
+            .into_any_element()
+    }
+
     fn render_detail(&self, cx: &mut Context<Self>) -> AnyElement {
+        if self.new_task_draft.is_some() {
+            return self.render_new_task_detail(cx);
+        }
         let Some(task) = self.selected_task().cloned() else {
             match self.active_view {
                 SmartView::Project(id) => return self.render_project_detail(id, cx),
@@ -4965,9 +5049,9 @@ impl Workspace {
                 .flex()
                 .items_center()
                 .justify_center()
-                .w(px(self.settings.detail_width))
+                .flex_1()
+                .min_w_0()
                 .h_full()
-                .flex_shrink_0()
                 .border_l_1()
                 .border_color(theme::BORDER)
                 .bg(theme::SURFACE)
@@ -4977,14 +5061,17 @@ impl Workspace {
         };
         let id = task.id;
         div()
+            .id("task-detail-panel")
+            .debug_selector(|| "task-detail-panel".to_owned())
             .flex()
             .flex_col()
-            .w(px(self.settings.detail_width))
+            .flex_1()
+            .min_w_0()
             .h_full()
-            .flex_shrink_0()
             .border_l_1()
             .border_color(theme::BORDER)
             .bg(theme::SURFACE)
+            .overflow_x_hidden()
             .overflow_y_scrollbar()
             .p_4()
             .gap_4()
@@ -5003,10 +5090,7 @@ impl Workspace {
                         "close-detail",
                         "閉じる",
                         cx,
-                        |this, _, cx| {
-                            this.selected_task = None;
-                            cx.notify();
-                        },
+                        |this, _, cx| this.close_task_form(cx),
                     )),
             )
             .child(labeled_input("タイトル", Input::new(&self.title_input)))
@@ -5014,6 +5098,7 @@ impl Workspace {
                 "メモ",
                 Input::new(&self.memo_input).h(px(160.0)),
             ))
+            .child(self.render_due_control())
             .child(section_label("状態"))
             .child(
                 div().flex().flex_wrap().gap_2().children(
@@ -5038,6 +5123,7 @@ impl Workspace {
             .child(
                 div()
                     .flex()
+                    .flex_wrap()
                     .gap_2()
                     .children(Priority::ALL.into_iter().map(|priority| {
                         let entity = cx.entity();
@@ -5063,7 +5149,9 @@ impl Workspace {
             ))
             .child(
                 div()
+                    .debug_selector(|| "task-progress-presets".to_owned())
                     .flex()
+                    .flex_wrap()
                     .gap_2()
                     .children([0, 25, 50, 75, 100].into_iter().map(|progress| {
                         let entity = cx.entity();
@@ -5077,12 +5165,6 @@ impl Workspace {
                                 });
                             })
                     })),
-            )
-            .child(labeled_input("納期", Input::new(&self.due_input)))
-            .child(
-                div().text_size(px(12.0)).text_color(theme::MUTED).child(
-                    "空欄、日付、日時を指定できます。Enterまたは下部の保存ボタンで確定します。",
-                ),
             )
             .child(section_label("プロジェクト"))
             .child(
@@ -5135,30 +5217,21 @@ impl Workspace {
                             })
                     })),
             )
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap_2()
-                    .mt_4()
-                    .child({
-                        let entity = cx.entity();
-                        Button::new("save-task-detail")
-                            .primary()
-                            .label("変更を保存")
-                            .on_click(move |_, _, cx| {
-                                entity.update(cx, |this, cx| {
-                                    this.save_selected_task_form(cx);
-                                });
-                            })
+            .child(div().flex().flex_col().gap_2().mt_4().child({
+                let entity = cx.entity();
+                Button::new("save-task-detail")
+                    .primary()
+                    .label("変更を保存")
+                    .on_click(move |_, _, cx| {
+                        entity.update(cx, |this, cx| {
+                            this.save_and_close_selected_task(cx);
+                        });
                     })
-                    .child(div().text_size(px(12.0)).text_color(theme::MUTED).child(
-                        "タイトルとメモは自動保存されますが、このボタンでも明示的に保存できます。",
-                    )),
-            )
+            }))
             .child(
                 div()
                     .flex()
+                    .flex_wrap()
                     .gap_2()
                     .child({
                         let entity = cx.entity();
@@ -5192,12 +5265,13 @@ impl Workspace {
         div()
             .flex()
             .flex_col()
-            .w(px(self.settings.detail_width))
+            .flex_1()
+            .min_w_0()
             .h_full()
-            .flex_shrink_0()
             .border_l_1()
             .border_color(theme::BORDER)
             .bg(theme::SURFACE)
+            .overflow_x_hidden()
             .overflow_y_scrollbar()
             .p_4()
             .gap_4()
@@ -5282,12 +5356,13 @@ impl Workspace {
         div()
             .flex()
             .flex_col()
-            .w(px(self.settings.detail_width))
+            .flex_1()
+            .min_w_0()
             .h_full()
-            .flex_shrink_0()
             .border_l_1()
             .border_color(theme::BORDER)
             .bg(theme::SURFACE)
+            .overflow_x_hidden()
             .p_4()
             .gap_4()
             .child(
@@ -5331,7 +5406,6 @@ impl Workspace {
 
     fn active_view_label(&self) -> String {
         match self.active_view {
-            SmartView::Inbox => "受信箱".to_owned(),
             SmartView::Today => "今日".to_owned(),
             SmartView::Upcoming => "今後7日".to_owned(),
             SmartView::Overdue => "期限超過".to_owned(),
@@ -5369,17 +5443,24 @@ impl Render for Workspace {
         let dismiss_error_entity = cx.entity();
         window.set_window_title("HodoQ");
         let bounds = window.bounds();
+        let show_task_detail = self.selected_task.is_some() || self.new_task_draft.is_some();
         let show_management_detail = self.selected_task.is_none()
+            && self.new_task_draft.is_none()
             && matches!(self.active_view, SmartView::Project(_) | SmartView::Tag(_));
         let resize_workspace = cx.entity();
         let main_panes = h_resizable("workspace-main-panes")
             .with_state(&self.sidebar_resize_state)
             .on_resize(move |state, _, cx| {
-                let Some(width) = state.read(cx).sizes().first().copied() else {
+                let sizes = state.read(cx).sizes();
+                let Some(sidebar_width) = sizes.first().copied() else {
                     return;
                 };
+                let detail_width = sizes.get(2).copied();
                 resize_workspace.update(cx, |this, cx| {
-                    this.settings.sidebar_width = f32::from(width).clamp(180.0, 380.0);
+                    this.settings.sidebar_width = f32::from(sidebar_width).clamp(180.0, 380.0);
+                    if let Some(detail_width) = detail_width {
+                        this.settings.detail_width = f32::from(detail_width).clamp(280.0, 560.0);
+                    }
                     cx.notify();
                 });
             })
@@ -5391,9 +5472,24 @@ impl Render for Workspace {
             )
             .child(
                 resizable_panel()
-                    .size_range(px(500.0)..gpui::Pixels::MAX)
+                    .size_range(px(160.0)..gpui::Pixels::MAX)
                     .child(self.render_content(cx)),
-            );
+            )
+            .when(show_task_detail, |panes| {
+                panes.child(
+                    resizable_panel()
+                        .size(px(self.settings.detail_width))
+                        .size_range(px(280.0)..px(560.0))
+                        .child(
+                            div()
+                                .debug_selector(|| "task-detail-slot".to_owned())
+                                .size_full()
+                                .min_w_0()
+                                .overflow_x_hidden()
+                                .child(self.render_detail(cx)),
+                        ),
+                )
+            });
         self.settings.window.x = Some(f32::from(bounds.origin.x));
         self.settings.window.y = Some(f32::from(bounds.origin.y));
         self.settings.window.width = f32::from(bounds.size.width);
@@ -5408,7 +5504,7 @@ impl Render for Workspace {
         div()
             .key_context("HodoQ")
             .on_action(cx.listener(|this, _: &NewTaskAction, window, cx| {
-                this.new_task_input.read(cx).focus_handle(cx).focus(window);
+                this.open_new_task_form(window, cx);
             }))
             .on_action(cx.listener(|this, _: &SearchAction, window, cx| {
                 this.search_input.read(cx).focus_handle(cx).focus(window);
@@ -5428,7 +5524,7 @@ impl Render for Workspace {
                 }
             }))
             .on_action(cx.listener(|this, _: &CloseDetailAction, _, cx| {
-                this.selected_task = None;
+                this.close_task_form(cx);
                 this.show_command_palette = false;
                 cx.notify();
             }))
@@ -5458,6 +5554,7 @@ impl Render for Workspace {
             .child(self.render_toolbar(cx))
             .child(
                 div()
+                    .debug_selector(|| "workspace-body".to_owned())
                     .relative()
                     .flex()
                     .flex_1()
@@ -5470,6 +5567,9 @@ impl Render for Workspace {
                                 .right_0()
                                 .top_0()
                                 .bottom_0()
+                                .w(px(self.settings.detail_width))
+                                .min_w_0()
+                                .overflow_x_hidden()
                                 .shadow_lg()
                                 .child(self.render_detail(cx)),
                         )
@@ -5592,7 +5692,7 @@ fn smart_view_from_setting(value: &str) -> SmartView {
         return SmartView::Saved(id);
     }
     match value {
-        "inbox" => SmartView::Inbox,
+        "inbox" => SmartView::All,
         "upcoming" => SmartView::Upcoming,
         "overdue" => SmartView::Overdue,
         "undated" => SmartView::Undated,
@@ -5608,7 +5708,6 @@ fn smart_view_from_setting(value: &str) -> SmartView {
 
 fn smart_view_setting(view: SmartView) -> String {
     match view {
-        SmartView::Inbox => "inbox",
         SmartView::Today => "today",
         SmartView::Upcoming => "upcoming",
         SmartView::Overdue => "overdue",
@@ -5725,10 +5824,85 @@ fn due_date(due: &Due) -> Option<Date> {
     }
 }
 
+fn picker_date_from_due(due: &Due) -> PickerDate {
+    let Some(date) = due_date(due) else {
+        return PickerDate::Single(None);
+    };
+    chrono::NaiveDate::from_ymd_opt(
+        date.year(),
+        u32::from(date.month() as u8),
+        u32::from(date.day()),
+    )
+    .map(PickerDate::from)
+    .unwrap_or(PickerDate::Single(None))
+}
+
+fn picker_due_input_value(date: PickerDate, current: &str) -> String {
+    let Some(date) = date.start() else {
+        return String::new();
+    };
+    let date = date.format("%Y-%m-%d").to_string();
+    match parse_due(current).ok().as_ref().and_then(due_time_value) {
+        Some(time) => format!("{date} {time}"),
+        None => date,
+    }
+}
+
+fn due_time_options() -> Vec<String> {
+    (0..24)
+        .flat_map(|hour| {
+            [0, 15, 30, 45]
+                .into_iter()
+                .map(move |minute| format!("{hour:02}:{minute:02}"))
+        })
+        .collect()
+}
+
+fn due_time_value(due: &Due) -> Option<String> {
+    let Due::DateTime(date_time) = due else {
+        return None;
+    };
+    let local = date_time.to_offset(UtcOffset::current_local_offset().unwrap_or(UtcOffset::UTC));
+    Some(format!("{:02}:{:02}", local.hour(), local.minute()))
+}
+
+fn due_input_with_time(current: &str, selected_time: Option<&str>) -> Result<String, String> {
+    let due = parse_due(current)?;
+    let Some(selected_time) = selected_time else {
+        return Ok(due_date(&due).map_or_else(String::new, |date| date.to_string()));
+    };
+    let time_format = format_description!("[hour]:[minute]");
+    let time = Time::parse(selected_time, time_format)
+        .map_err(|_| "時刻は HH:MM 形式で指定してください".to_owned())?;
+    let Some(date) = due_date(&due) else {
+        return Err("時刻を選ぶ前に日付を指定してください".to_owned());
+    };
+    Ok(format!("{date} {:02}:{:02}", time.hour(), time.minute()))
+}
+
+fn sync_due_time_select(
+    select: &Entity<SelectState<Vec<String>>>,
+    due: &Due,
+    window: &mut Window,
+    cx: &mut Context<Workspace>,
+) {
+    select.update(cx, |state, cx| {
+        if let Some(time) = due_time_value(due) {
+            state.set_selected_value(&time, window, cx);
+        } else {
+            state.set_selected_index(None, window, cx);
+        }
+    });
+}
+
 fn date_to_filter_datetime(date: Date) -> OffsetDateTime {
     date.with_hms(0, 0, 0)
         .expect("midnight must be valid")
         .assume_offset(UtcOffset::current_local_offset().unwrap_or(UtcOffset::UTC))
+}
+
+fn calendar_leading_days(first: Date) -> usize {
+    first.weekday().number_days_from_sunday() as usize
 }
 
 fn shift_month(date: Date, delta: i32) -> Date {
@@ -5778,7 +5952,7 @@ fn task_matches_saved_view(task: &Task, view: &SavedView) -> bool {
     let today = now.to_offset(offset).date();
     let smart_view_matches = match base_view {
         None | Some(SavedBaseView::Trash) => true,
-        Some(SavedBaseView::Inbox) => task.status == TaskStatus::Inbox,
+        Some(SavedBaseView::Inbox) => task.status == TaskStatus::Todo,
         Some(SavedBaseView::Today) => due_is_today(&task.due, today, offset),
         Some(SavedBaseView::Upcoming) => due_is_upcoming(&task.due, today, offset),
         Some(SavedBaseView::Overdue) => {
@@ -5799,7 +5973,7 @@ fn task_matches_saved_view(task: &Task, view: &SavedView) -> bool {
     let base_matches = (query.is_empty()
         || task.title.to_lowercase().contains(&query)
         || task.memo.to_lowercase().contains(&query))
-        && (filter.statuses.is_empty() || filter.statuses.contains(&task.status))
+        && status_filter_matches(&filter.statuses, task.status)
         && (filter.priorities.is_empty() || filter.priorities.contains(&task.priority))
         && ((filter.project_ids.is_empty() && !filter.unassigned_project)
             || task.project_id.map_or(filter.unassigned_project, |id| {
@@ -5944,6 +6118,22 @@ fn priority_color(priority: Priority) -> gpui::Rgba {
     }
 }
 
+fn normalized_statuses(statuses: &[TaskStatus]) -> HashSet<TaskStatus> {
+    statuses
+        .iter()
+        .map(|status| match status {
+            TaskStatus::Inbox => TaskStatus::Todo,
+            status => *status,
+        })
+        .collect()
+}
+
+fn status_filter_matches(statuses: &[TaskStatus], status: TaskStatus) -> bool {
+    statuses.is_empty()
+        || statuses.contains(&status)
+        || (status == TaskStatus::Todo && statuses.contains(&TaskStatus::Inbox))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -5975,14 +6165,41 @@ mod tests {
         window
             .update(cx, |workspace, window, cx| {
                 let _tree = workspace.render(window, cx).into_any_element();
-                assert_eq!(workspace.active_view, SmartView::Inbox);
+                assert_eq!(workspace.active_view, SmartView::All);
                 assert_eq!(workspace.view_kind, ViewKind::List);
                 workspace.select_task(task_id, window, cx);
-                workspace.show_task_editor_details = true;
                 workspace.view_kind = ViewKind::Calendar;
                 let _selected_calendar_tree = workspace.render(window, cx).into_any_element();
                 assert!(workspace.save_and_close_selected_task(cx));
                 assert!(workspace.selected_task.is_none());
+
+                workspace.open_new_task_form(window, cx);
+                assert!(workspace.new_task_draft.is_some());
+                workspace.title_input.update(cx, |state, cx| {
+                    state.set_value("新規フォームテスト", window, cx);
+                });
+                workspace.memo_input.update(cx, |state, cx| {
+                    state.set_value("全項目から作成", window, cx);
+                });
+                workspace.due_input.update(cx, |state, cx| {
+                    state.set_value("2026-08-30", window, cx);
+                });
+                workspace.progress_input.update(cx, |state, cx| {
+                    state.set_value("25", window, cx);
+                });
+                workspace.set_new_task_priority(Priority::High, cx);
+                let _new_task_calendar_tree = workspace.render(window, cx).into_any_element();
+                assert!(workspace.create_task(cx));
+                assert!(workspace.new_task_draft.is_none());
+                let created = workspace
+                    .tasks
+                    .iter()
+                    .find(|task| task.title == "新規フォームテスト")
+                    .unwrap();
+                assert_eq!(created.memo, "全項目から作成");
+                assert_eq!(created.priority, Priority::High);
+                assert_eq!(created.progress, 25);
+                assert!(matches!(created.due, Due::Date(_)));
 
                 workspace.select_task(task_id, window, cx);
                 workspace.title_input.update(cx, |state, cx| {
@@ -5995,6 +6212,100 @@ mod tests {
             .unwrap();
     }
 
+    #[gpui::test]
+    fn task_detail_content_stays_inside_resizable_slot(cx: &mut gpui::TestAppContext) {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = AppPaths::resolve(Some(directory.path())).unwrap();
+        let instance_lock = InstanceLock::acquire(&paths.lock).unwrap();
+        let application = TaskApplication::start(&paths.database).unwrap();
+        let task = Task::new("右端レイアウトテスト", OffsetDateTime::now_utc()).unwrap();
+        let task_id = task.id;
+        application.save_task(task).unwrap();
+        let snapshot = application.load().unwrap();
+        cx.update(gpui_component::init);
+        let window = cx.add_window(move |window, cx| {
+            let mut workspace = Workspace::new(
+                application,
+                snapshot,
+                paths,
+                AppSettings::default(),
+                instance_lock,
+                true,
+                window,
+                cx,
+            );
+            workspace.select_task(task_id, window, cx);
+            workspace
+        });
+
+        cx.run_until_parked();
+        let mut visual = gpui::VisualTestContext::from_window(*window, cx);
+        visual.run_until_parked();
+        let slot = visual
+            .debug_bounds("task-detail-slot")
+            .expect("task detail slot should be rendered");
+        let workspace_body = visual
+            .debug_bounds("workspace-body")
+            .expect("workspace body should be rendered");
+        let slot_left = f32::from(slot.origin.x);
+        let slot_right = f32::from(slot.origin.x + slot.size.width);
+        let workspace_right = f32::from(workspace_body.origin.x + workspace_body.size.width);
+        assert!(
+            (slot_right - workspace_right).abs() <= 0.5,
+            "detail slot must end at the window content edge: slot_right={slot_right}px, workspace_right={workspace_right}px"
+        );
+        for selector in ["task-detail-panel", "due-control", "task-progress-presets"] {
+            let bounds = visual
+                .debug_bounds(selector)
+                .unwrap_or_else(|| panic!("{selector} should be rendered"));
+            assert!(f32::from(bounds.origin.x) >= slot_left - 0.5);
+            assert!(
+                f32::from(bounds.origin.x + bounds.size.width) <= slot_right + 0.5,
+                "{selector} overflowed its slot: right={}px, slot_right={}px",
+                f32::from(bounds.origin.x + bounds.size.width),
+                slot_right
+            );
+        }
+        visual.update(|window, _| window.remove_window());
+    }
+
+    #[gpui::test]
+    fn calendar_month_grid_keeps_visible_height(cx: &mut gpui::TestAppContext) {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = AppPaths::resolve(Some(directory.path())).unwrap();
+        let instance_lock = InstanceLock::acquire(&paths.lock).unwrap();
+        let application = TaskApplication::start(&paths.database).unwrap();
+        let snapshot = application.load().unwrap();
+        cx.update(gpui_component::init);
+        let window = cx.add_window(move |window, cx| {
+            let mut workspace = Workspace::new(
+                application,
+                snapshot,
+                paths,
+                AppSettings::default(),
+                instance_lock,
+                true,
+                window,
+                cx,
+            );
+            workspace.view_kind = ViewKind::Calendar;
+            workspace
+        });
+
+        cx.run_until_parked();
+        let mut visual = gpui::VisualTestContext::from_window(*window, cx);
+        visual.run_until_parked();
+        let bounds = visual
+            .debug_bounds("calendar-month-grid")
+            .expect("calendar month grid should be rendered");
+        assert!(
+            f32::from(bounds.size.height) >= CALENDAR_GRID_MIN_HEIGHT,
+            "calendar grid height was {}px",
+            f32::from(bounds.size.height)
+        );
+        visual.update(|window, _| window.remove_window());
+    }
+
     #[test]
     fn due_input_supports_none_date_and_datetime() {
         assert_eq!(parse_due("未定").unwrap(), Due::None);
@@ -6003,6 +6314,45 @@ mod tests {
             parse_due("2026-08-28 14:30").unwrap(),
             Due::DateTime(_)
         ));
+    }
+
+    #[test]
+    fn date_picker_selection_updates_due_input() {
+        let selected = chrono::NaiveDate::from_ymd_opt(2026, 8, 30).unwrap();
+        assert_eq!(
+            picker_due_input_value(PickerDate::from(selected), ""),
+            "2026-08-30"
+        );
+        assert_eq!(
+            picker_due_input_value(PickerDate::from(selected), "2026-08-20 14:30"),
+            "2026-08-30 14:30"
+        );
+        assert_eq!(
+            picker_due_input_value(PickerDate::Single(None), "2026-08-20 14:30"),
+            ""
+        );
+    }
+
+    #[test]
+    fn time_selection_updates_the_unified_due_input() {
+        assert_eq!(
+            due_input_with_time("2026-08-30", Some("14:30")).unwrap(),
+            "2026-08-30 14:30"
+        );
+        assert_eq!(
+            due_input_with_time("2026-08-30 14:30", None).unwrap(),
+            "2026-08-30"
+        );
+        assert!(due_input_with_time("", Some("14:30")).is_err());
+        assert_eq!(due_time_options().len(), 96);
+    }
+
+    #[test]
+    fn calendar_month_starts_on_sunday() {
+        let sunday = Date::from_calendar_date(2026, time::Month::November, 1).unwrap();
+        let saturday = Date::from_calendar_date(2026, time::Month::August, 1).unwrap();
+        assert_eq!(calendar_leading_days(sunday), 0);
+        assert_eq!(calendar_leading_days(saturday), 6);
     }
 
     #[test]

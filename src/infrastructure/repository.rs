@@ -693,7 +693,7 @@ fn task_matches(task: &Task, filter: &TaskFilter) -> bool {
     {
         return false;
     }
-    if !filter.statuses.is_empty() && !filter.statuses.contains(&task.status) {
+    if !status_filter_matches(&filter.statuses, task.status) {
         return false;
     }
     if !filter.priorities.is_empty() && !filter.priorities.contains(&task.priority) {
@@ -727,7 +727,7 @@ fn task_matches(task: &Task, filter: &TaskFilter) -> bool {
     };
     let smart_view_matches = match filter.base_view {
         None | Some(SavedBaseView::Trash) => true,
-        Some(SavedBaseView::Inbox) => task.status == TaskStatus::Inbox,
+        Some(SavedBaseView::Inbox) => task.status == TaskStatus::Todo,
         Some(SavedBaseView::Today) => due_date == Some(today),
         Some(SavedBaseView::Upcoming) => {
             due_date.is_some_and(|date| date >= today && date <= today + time::Duration::days(7))
@@ -771,6 +771,12 @@ fn task_matches(task: &Task, filter: &TaskFilter) -> bool {
         }
     }
     true
+}
+
+fn status_filter_matches(statuses: &[TaskStatus], status: TaskStatus) -> bool {
+    statuses.is_empty()
+        || statuses.contains(&status)
+        || (status == TaskStatus::Todo && statuses.contains(&TaskStatus::Inbox))
 }
 
 fn sort_tasks(tasks: &mut [Task], sort: &[SortSpec]) {

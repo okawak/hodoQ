@@ -47,8 +47,7 @@ pub enum TaskStatus {
 }
 
 impl TaskStatus {
-    pub const ALL: [Self; 6] = [
-        Self::Inbox,
+    pub const ALL: [Self; 5] = [
         Self::Todo,
         Self::Doing,
         Self::Blocked,
@@ -69,7 +68,7 @@ impl TaskStatus {
 
     pub const fn label(self) -> &'static str {
         match self {
-            Self::Inbox => "受信箱",
+            Self::Inbox => "未着手",
             Self::Todo => "未着手",
             Self::Doing => "進行中",
             Self::Blocked => "保留",
@@ -187,7 +186,7 @@ impl Task {
             id: TaskId::new(),
             title,
             memo: String::new(),
-            status: TaskStatus::Inbox,
+            status: TaskStatus::Todo,
             priority: Priority::None,
             progress: 0,
             due: Due::None,
@@ -292,6 +291,7 @@ mod tests {
         let now = OffsetDateTime::UNIX_EPOCH;
         let task = Task::new("  example  ", now).unwrap();
         assert_eq!(task.title, "example");
+        assert_eq!(task.status, TaskStatus::Todo);
         assert_eq!(Task::new("   ", now), Err(TaskError::EmptyTitle));
     }
 }

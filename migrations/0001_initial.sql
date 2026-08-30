@@ -15,8 +15,8 @@ CREATE TABLE IF NOT EXISTS tasks (
     id            TEXT PRIMARY KEY NOT NULL,
     title         TEXT NOT NULL CHECK (length(title) BETWEEN 1 AND 500),
     memo          TEXT NOT NULL DEFAULT '',
-    status        TEXT NOT NULL DEFAULT 'inbox'
-                  CHECK (status IN ('inbox', 'todo', 'doing', 'blocked', 'done', 'archived')),
+    status        TEXT NOT NULL DEFAULT 'todo'
+                  CHECK (status IN ('todo', 'doing', 'blocked', 'done', 'archived')),
     priority      TEXT NOT NULL DEFAULT 'none'
                   CHECK (priority IN ('none', 'low', 'medium', 'high')),
     progress      INTEGER NOT NULL DEFAULT 0 CHECK (progress BETWEEN 0 AND 100),
@@ -76,4 +76,4 @@ CREATE INDEX IF NOT EXISTS idx_task_tags_tag_id ON task_tags(tag_id);
 CREATE INDEX IF NOT EXISTS idx_projects_archived_at ON projects(archived_at);
 CREATE INDEX IF NOT EXISTS idx_saved_views_sort_order ON saved_views(sort_order);
 
-PRAGMA user_version = 1;
+PRAGMA user_version = 2;
