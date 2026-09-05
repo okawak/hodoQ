@@ -164,14 +164,21 @@ fn compare_task_field(left: &Task, right: &Task, field: SortField, offset: UtcOf
 }
 
 fn compare_task_due(left: &Due, right: &Due, offset: UtcOffset) -> Ordering {
-    match (left, right) {
-        (Due::None, Due::None) => Ordering::Equal,
-        (Due::None, _) => Ordering::Greater,
-        (_, Due::None) => Ordering::Less,
-        (Due::Date(left), Due::Date(right)) => left.cmp(right),
-        (Due::DateTime(left), Due::DateTime(right)) => left.cmp(right),
-        (Due::Date(left), Due::DateTime(right)) => left.cmp(&right.to_offset(offset).date()),
-        (Due::DateTime(left), Due::Date(right)) => left.to_offset(offset).date().cmp(right),
+    // Compare every dated value on the same timeline. Treat date-only deadlines
+    // as the end of that local day, including when the other value has a time.
+    let key = |due: &Due| match due {
+        Due::None => None,
+        Due::Date(date) => Some(date.with_time(time::macros::time!(23:59:59.999_999_999))),
+        Due::DateTime(value) => {
+            let local = value.to_offset(offset);
+            Some(local.date().with_time(local.time()))
+        }
+    };
+    match (key(left), key(right)) {
+        (None, None) => Ordering::Equal,
+        (None, _) => Ordering::Greater,
+        (_, None) => Ordering::Less,
+        (Some(left), Some(right)) => left.cmp(&right),
     }
 }
 
@@ -253,11 +260,21 @@ mod tests {
         }];
         assert_eq!(
             compare_tasks(&left, &right, &sort, offset!(+9)),
-            Ordering::Equal
+            Ordering::Greater
         );
         assert_eq!(
             compare_tasks(&left, &right, &sort, UtcOffset::UTC),
             Ordering::Greater
+        );
+        // In UTC the datetime is September 5; in +09 it is September 6.
+        left.due = Due::Date(date!(2026 - 09 - 05));
+        assert_eq!(
+            compare_tasks(&left, &right, &sort, UtcOffset::UTC),
+            Ordering::Greater
+        );
+        assert_eq!(
+            compare_tasks(&left, &right, &sort, offset!(+9)),
+            Ordering::Less
         );
         right.due = Due::None;
         assert_eq!(
@@ -272,5 +289,57 @@ mod tests {
             compare_tasks(&left, &right, &descending, offset!(+9)),
             Ordering::Greater
         );
+    }
+    #[test]
+    fn mixed_due_comparison_is_transitive() {
+        let now = datetime!(2026-09-05 0:00 UTC);
+        let dues = [
+            Due::DateTime(now + time::Duration::hours(9)),
+            Due::Date(date!(2026 - 09 - 05)),
+            Due::DateTime(now + time::Duration::hours(18)),
+            Due::None,
+            Due::Date(date!(2026 - 09 - 06)),
+        ];
+        let tasks = dues
+            .into_iter()
+            .enumerate()
+            .map(|(index, due)| {
+                let mut task = Task::new("task", now).unwrap();
+                task.id = format!("00000000-0000-0000-0000-{:012}", 10 - index)
+                    .parse()
+                    .unwrap();
+                task.due = due;
+                task
+            })
+            .collect::<Vec<_>>();
+        for offset in [UtcOffset::UTC, offset!(+9), offset!(-7)] {
+            for direction in [SortDirection::Ascending, SortDirection::Descending] {
+                let sort = [SortSpec {
+                    field: SortField::Due,
+                    direction,
+                }];
+                for a in &tasks {
+                    for b in &tasks {
+                        assert_eq!(
+                            compare_tasks(a, b, &sort, offset),
+                            compare_tasks(b, a, &sort, offset).reverse()
+                        );
+                        for c in &tasks {
+                            if compare_tasks(a, b, &sort, offset).is_gt()
+                                && compare_tasks(b, c, &sort, offset).is_gt()
+                            {
+                                assert!(
+                                    compare_tasks(a, c, &sort, offset).is_gt(),
+                                    "non-transitive comparison: {:?}, {:?}, {:?}",
+                                    a.due,
+                                    b.due,
+                                    c.due
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 }

@@ -778,7 +778,9 @@ hodoq/
 │       └── ci.yml
 ├── .gitignore
 ├── README.md
-├── DESIGN.md
+├── docs/
+│   ├── DESIGN.md
+│   └── PRODUCT_SPEC.md
 ├── Cargo.toml
 ├── Cargo.lock
 ├── rust-toolchain.toml
