@@ -163,3 +163,105 @@ fn list_ordering_does_not_change_board_or_calendar_sorting(cx: &mut TestAppConte
         })
         .unwrap();
 }
+
+#[gpui::test]
+fn list_row_reordering_moves_visible_neighbors_without_changing_other_priorities(
+    cx: &mut TestAppContext,
+) {
+    let (_directory, window, [a, b, c, d]) = workspace(cx);
+    window
+        .update(cx, |workspace, window, cx| {
+            workspace.set_task_priority(d, Priority::High, cx);
+            let original = workspace.tasks.clone();
+            assert_eq!(task_ids(workspace.visible_tasks(cx)), [b, d, a, c]);
+            workspace.move_task_order(b, 1, cx);
+            assert_eq!(task_ids(workspace.visible_tasks(cx)), [d, b, a, c]);
+            for id in [a, c] {
+                assert_eq!(
+                    workspace.tasks.iter().find(|t| t.id == id),
+                    original.iter().find(|t| t.id == id)
+                );
+            }
+            let reordered = workspace.tasks.clone();
+            workspace.move_task_order(b, 1, cx); // High-priority boundary.
+            workspace.move_task_order(a, -1, cx);
+            workspace.swap_task_order(b, a, cx); // Drag cannot cross that boundary either.
+            assert_eq!(workspace.tasks, reordered);
+            workspace.undo(cx);
+            assert_eq!(task_ids(workspace.visible_tasks(cx)), [b, d, a, c]);
+            workspace.redo(cx);
+            assert_eq!(task_ids(workspace.visible_tasks(cx)), [d, b, a, c]);
+            let stored = workspace.worker.load().unwrap();
+            for task in &workspace.tasks {
+                assert_eq!(
+                    stored
+                        .tasks
+                        .iter()
+                        .find(|t| t.id == task.id)
+                        .unwrap()
+                        .sort_order,
+                    task.sort_order
+                );
+            }
+            window.remove_window();
+        })
+        .unwrap();
+}
+
+#[gpui::test]
+fn list_row_reordering_respects_filters_and_groups(cx: &mut TestAppContext) {
+    let (_directory, window, [a, b, c, d]) = workspace(cx);
+    window
+        .update(cx, |workspace, window, cx| {
+            let original = workspace.tasks.clone();
+            workspace.filter_statuses.insert(TaskStatus::Todo);
+            assert_eq!(task_ids(workspace.visible_tasks(cx)), [a, c]);
+            workspace.move_task_order(a, 1, cx);
+            assert_eq!(task_ids(workspace.visible_tasks(cx)), [c, a]);
+            for id in [b, d] {
+                assert_eq!(
+                    workspace.tasks.iter().find(|t| t.id == id),
+                    original.iter().find(|t| t.id == id)
+                );
+            }
+            let filtered = workspace.tasks.clone();
+            workspace.move_task_order(b, 1, cx); // Hidden source cannot reorder anything.
+            assert_eq!(workspace.tasks, filtered);
+            workspace.filter_statuses.clear();
+            workspace.group_by = Some(GroupBy::Status);
+            assert_eq!(task_ids(workspace.visible_tasks(cx)), [c, a, b, d]);
+            workspace.move_task_order(a, 1, cx); // Group boundary.
+            assert_eq!(workspace.tasks, filtered);
+            workspace.move_task_order(c, 1, cx);
+            assert_eq!(task_ids(workspace.visible_tasks(cx)), [a, c, b, d]);
+            window.remove_window();
+        })
+        .unwrap();
+}
+
+#[gpui::test]
+fn list_row_reordering_supports_descending_manual_sort_but_not_automatic_sort(
+    cx: &mut TestAppContext,
+) {
+    let (_directory, window, [a, b, c, d]) = workspace(cx);
+    window
+        .update(cx, |workspace, window, cx| {
+            workspace.sort = vec![SortSpec {
+                field: SortField::Manual,
+                direction: SortDirection::Descending,
+            }];
+            assert_eq!(task_ids(workspace.visible_tasks(cx)), [b, d, c, a]);
+            workspace.move_task_order(d, 1, cx);
+            assert_eq!(task_ids(workspace.visible_tasks(cx)), [b, c, d, a]);
+            workspace.sort = vec![SortSpec {
+                field: SortField::Title,
+                direction: SortDirection::Ascending,
+            }];
+            let before = workspace.tasks.clone();
+            workspace.move_task_order(a, 1, cx);
+            workspace.swap_task_order(a, c, cx);
+            assert_eq!(workspace.tasks, before);
+            window.remove_window();
+        })
+        .unwrap();
+}

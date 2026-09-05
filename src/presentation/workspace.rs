@@ -7,7 +7,7 @@ use gpui::{
     prelude::FluentBuilder as _, px,
 };
 use gpui_component::{
-    Selectable as _, Sizable as _,
+    Disableable as _, Selectable as _, Sizable as _,
     button::{Button, ButtonVariants as _},
     calendar::Date as PickerDate,
     checkbox::Checkbox,
@@ -875,52 +875,29 @@ impl Workspace {
         cx.notify();
     }
 
-    fn move_task_order(&mut self, id: TaskId, direction: i32, cx: &mut Context<Self>) {
-        let mut indices = self
-            .tasks
-            .iter()
-            .enumerate()
-            .filter(|(_, task)| task.deleted_at.is_none())
-            .map(|(index, task)| (index, task.sort_order))
-            .collect::<Vec<_>>();
-        indices.sort_by_key(|(_, order)| *order);
-        let Some(position) = indices
-            .iter()
-            .position(|(index, _)| self.tasks[*index].id == id)
-        else {
-            return;
-        };
-        let target = if direction < 0 {
-            position.checked_sub(1)
-        } else if position + 1 < indices.len() {
-            Some(position + 1)
-        } else {
-            None
-        };
-        let Some(target) = target else { return };
-        let left = indices[position].0;
-        let right = indices[target].0;
-        let before_left = self.tasks[left].clone();
-        let before_right = self.tasks[right].clone();
-        let old = self.tasks[left].sort_order;
-        self.tasks[left].sort_order = self.tasks[right].sort_order;
-        self.tasks[right].sort_order = old;
-        let changed = vec![self.tasks[left].clone(), self.tasks[right].clone()];
-        if let Err(error) = self.worker.save_tasks(changed) {
-            self.tasks[left] = before_left;
-            self.tasks[right] = before_right;
-            self.set_error(error);
-        } else {
-            self.push_task_history(vec![
-                (Some(before_left), Some(self.tasks[left].clone())),
-                (Some(before_right), Some(self.tasks[right].clone())),
-            ]);
-            self.status_message = "表示順を変更しました".to_owned();
+    fn swap_task_order(&mut self, dragged: TaskId, target: TaskId, cx: &mut Context<Self>) {
+        if self.view_kind == ViewKind::List {
+            let tasks = self.visible_tasks(cx);
+            let Some(left) = tasks.iter().find(|task| task.id == dragged) else {
+                return;
+            };
+            let Some(right) = tasks.iter().find(|task| task.id == target) else {
+                return;
+            };
+            if !self.can_reorder_list_pair(left, right) {
+                return;
+            }
         }
-        cx.notify();
+        self.persist_task_order_swap(dragged, target, "ドラッグで表示順を変更しました", cx);
     }
 
-    fn swap_task_order(&mut self, dragged: TaskId, target: TaskId, cx: &mut Context<Self>) {
+    fn persist_task_order_swap(
+        &mut self,
+        dragged: TaskId,
+        target: TaskId,
+        message: &str,
+        cx: &mut Context<Self>,
+    ) {
         if dragged == target {
             return;
         }
@@ -945,7 +922,7 @@ impl Workspace {
                 (Some(before_left), Some(self.tasks[left].clone())),
                 (Some(before_right), Some(self.tasks[right].clone())),
             ]);
-            self.status_message = "ドラッグで表示順を変更しました".to_owned();
+            self.status_message = message.to_owned();
         }
         cx.notify();
     }
@@ -3323,7 +3300,13 @@ impl Workspace {
             .into_any_element()
     }
 
-    fn render_task_row(&self, task: Task, cx: &mut Context<Self>) -> AnyElement {
+    fn render_task_row(
+        &self,
+        task: Task,
+        can_move_up: bool,
+        can_move_down: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let task_id = task.id;
         let selected =
             self.selected_task == Some(task_id) || self.selected_tasks.contains(&task_id);
@@ -3481,6 +3464,7 @@ impl Workspace {
                     .ghost()
                     .small()
                     .label("↑")
+                    .disabled(!can_move_up)
                     .on_click(move |_, _, cx| {
                         entity.update(cx, |this, cx| this.move_task_order(task_id, -1, cx));
                     })
@@ -3491,6 +3475,7 @@ impl Workspace {
                     .ghost()
                     .small()
                     .label("↓")
+                    .disabled(!can_move_down)
                     .on_click(move |_, _, cx| {
                         entity.update(cx, |this, cx| this.move_task_order(task_id, 1, cx));
                     })
