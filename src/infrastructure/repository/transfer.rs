@@ -93,7 +93,37 @@ impl SqliteRepository {
             ));
         }
         drop(statement);
-        Ok(candidate)
+        candidate.rebuild_backup_schema()
+    }
+
+    fn rebuild_backup_schema(&self) -> Result<Self, RepositoryError> {
+        // Copy values into our own schema. A source may omit constraints or add
+        // triggers; none of its DDL should replace the live repository's schema.
+        let mut restored = Self::open_in_memory()?;
+        let transaction = restored.connection.transaction()?;
+        for table in ["projects", "tags", "tasks", "task_tags", "saved_views"] {
+            let columns = transaction
+                .prepare(&format!("PRAGMA table_info({table})"))?
+                .query_map([], |row| row.get::<_, String>(1))?
+                .collect::<Result<Vec<_>, _>>()?;
+            let column_names = columns.join(", ");
+            let placeholders = vec!["?"; columns.len()].join(", ");
+            let mut source = self
+                .connection
+                .prepare(&format!("SELECT {column_names} FROM {table}"))?;
+            let mut insert = transaction.prepare(&format!(
+                "INSERT INTO {table} ({column_names}) VALUES ({placeholders})"
+            ))?;
+            let mut rows = source.query([])?;
+            while let Some(row) = rows.next()? {
+                let values = (0..columns.len())
+                    .map(|index| row.get::<_, rusqlite::types::Value>(index))
+                    .collect::<Result<Vec<_>, _>>()?;
+                insert.execute(rusqlite::params_from_iter(values))?;
+            }
+        }
+        transaction.commit()?;
+        Ok(restored)
     }
 
     pub fn export_csv(

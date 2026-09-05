@@ -454,6 +454,8 @@ fn invalid_backup_is_rejected_before_touching_current_data() {
         "bad date",
         "bad json",
         "foreign key",
+        "undeclared foreign key",
+        "undeclared orphan",
         "migration",
     ] {
         let directory = tempfile::tempdir().unwrap();
@@ -478,6 +480,21 @@ fn invalid_backup_is_rejected_before_touching_current_data() {
                     .unwrap()
                     .execute_batch("CREATE TABLE tasks (id TEXT); PRAGMA user_version=1;")
                     .unwrap();
+            }
+            "undeclared foreign key" | "undeclared orphan" => {
+                let connection = Connection::open(&source).unwrap();
+                connection
+                    .execute_batch(&schema_without_foreign_keys())
+                    .unwrap();
+                drop(connection);
+                let mut backup = SqliteRepository::open(&source).unwrap();
+                backup.save_task(&task).unwrap();
+                let sql = if invalid == "undeclared foreign key" {
+                    "UPDATE tasks SET project_id='00000000-0000-0000-0000-000000000001'"
+                } else {
+                    "INSERT INTO task_tags (task_id, tag_id) VALUES ('00000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-000000000002')"
+                };
+                backup.connection.execute_batch(sql).unwrap();
             }
             _ => {
                 let mut backup = SqliteRepository::open(&source).unwrap();
@@ -561,4 +578,33 @@ fn valid_empty_hodoq_backup_can_replace_current_data() {
             .unwrap(),
         Some(task)
     );
+}
+
+#[test]
+fn restore_rebuilds_constraints_missing_from_source_schema() {
+    let directory = tempfile::tempdir().unwrap();
+    let source = directory.path().join("without-foreign-keys.sqlite3");
+    let safety = directory.path().join("safety.sqlite3");
+    let connection = Connection::open(&source).unwrap();
+    connection
+        .execute_batch(&schema_without_foreign_keys())
+        .unwrap();
+    drop(connection);
+    let source_before = fs::read(&source).unwrap();
+    let mut repository = SqliteRepository::open_in_memory().unwrap();
+    repository.restore_from_backup(&source, &safety).unwrap();
+    let mut task = Task::new("invalid project", OffsetDateTime::UNIX_EPOCH).unwrap();
+    task.project_id = Some(ProjectId::new());
+    assert!(repository.save_task(&task).is_err());
+    task.project_id = None;
+    task.tag_ids.push(TagId::new());
+    assert!(repository.save_task(&task).is_err());
+    assert_eq!(fs::read(source).unwrap(), source_before);
+}
+
+fn schema_without_foreign_keys() -> String {
+    include_str!("../../../migrations/0001_initial.sql")
+        .replace("REFERENCES projects(id) ON DELETE SET NULL", "")
+        .replace("REFERENCES tasks(id) ON DELETE CASCADE", "")
+        .replace("REFERENCES tags(id) ON DELETE CASCADE", "")
 }
