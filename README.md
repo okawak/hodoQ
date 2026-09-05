@@ -108,4 +108,4 @@ CIはWindowsとApple Silicon macOSでテストとリリースビルドを行い�
 - CIだけ通常ビルドのデバッグ情報を行番号中心に抑え、再利用しないインクリメンタル生成物を無効化します。通常テストのdebug assertion／overflow check、リリース最適化、性能基準は変更しません。依存解決には`--locked`を使用します。
 - 初回やRust更新後、キャッシュ失効後は再ビルドが必要です。効果の確認は同じPRのCIを再実行し、「Rust cache」の復元結果と各ステップの時間を比較してください。キャッシュの問題を切り分ける場合はGitHub ActionsのCaches画面で対象エントリを削除して再実行できます。
 
-GUIの実機確認項目は [RELEASE_CHECKLIST.md](./RELEASE_CHECKLIST.md)、詳細仕様は [DESIGN.md](./DESIGN.md) を参照してください。
+GUIの実機確認項目は [RELEASE_CHECKLIST.md](./RELEASE_CHECKLIST.md)、詳細仕様は [docs/PRODUCT_SPEC.md](./docs/PRODUCT_SPEC.md)、アーキテクチャは [docs/DESIGN.md](./docs/DESIGN.md) を参照してください。

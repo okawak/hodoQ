@@ -1,5 +1,4 @@
 use std::{
-    cmp::Ordering,
     collections::HashMap,
     fs::{self, File},
     io::Write,
@@ -14,11 +13,12 @@ use thiserror::Error;
 use time::{Date, OffsetDateTime, format_description::well_known::Iso8601};
 
 use crate::domain::{
-    Due, DueScope, GroupBy, Priority, Project, ProjectId, SavedBaseView, SavedView, SavedViewId,
-    SortDirection, SortField, SortSpec, Tag, TagId, Task, TaskFilter, TaskId, TaskStatus, ViewKind,
+    Due, GroupBy, Priority, Project, ProjectId, SavedView, SavedViewId, SortSpec, Tag, TagId, Task,
+    TaskFilter, TaskId, TaskStatus, ViewKind,
 };
 
 use super::migrations;
+use crate::domain::task_query::{TaskQuery, compare_tasks};
 
 pub struct SqliteRepository {
     connection: Connection,
@@ -134,8 +134,12 @@ impl SqliteRepository {
         sort: &[SortSpec],
     ) -> Result<Vec<Task>, RepositoryError> {
         let mut tasks = self.load_all_task_rows()?;
-        tasks.retain(|task| task_matches(task, filter));
-        sort_tasks(&mut tasks, sort);
+        let offset = time::UtcOffset::current_local_offset().unwrap_or(time::UtcOffset::UTC);
+        let query = TaskQuery::new(filter, OffsetDateTime::now_utc(), offset);
+        tasks.retain(|task| query.matches(task));
+        let default_sort = [SortSpec::default()];
+        let sort = if sort.is_empty() { &default_sort } else { sort };
+        tasks.sort_by(|left, right| compare_tasks(left, right, sort, offset));
         Ok(tasks)
     }
 
@@ -669,163 +673,6 @@ fn row_to_task(row: &rusqlite::Row<'_>) -> rusqlite::Result<Task> {
     })
 }
 
-fn task_matches(task: &Task, filter: &TaskFilter) -> bool {
-    let visibility_matches = match filter.base_view {
-        Some(SavedBaseView::Trash) => task.deleted_at.is_some(),
-        _ if filter.only_deleted => task.deleted_at.is_some(),
-        _ => task.deleted_at.is_none(),
-    };
-    if !visibility_matches {
-        return false;
-    }
-    if !filter.include_archived
-        && !filter.only_deleted
-        && filter.base_view != Some(SavedBaseView::Archived)
-        && filter.base_view != Some(SavedBaseView::Trash)
-        && task.status == TaskStatus::Archived
-    {
-        return false;
-    }
-    let query = filter.query.trim().to_lowercase();
-    if !query.is_empty()
-        && !task.title.to_lowercase().contains(&query)
-        && !task.memo.to_lowercase().contains(&query)
-    {
-        return false;
-    }
-    if !status_filter_matches(&filter.statuses, task.status) {
-        return false;
-    }
-    if !filter.priorities.is_empty() && !filter.priorities.contains(&task.priority) {
-        return false;
-    }
-    if !filter.project_ids.is_empty() || filter.unassigned_project {
-        let matched = task.project_id.map_or(filter.unassigned_project, |id| {
-            filter.project_ids.contains(&id)
-        });
-        if !matched {
-            return false;
-        }
-    }
-    if !filter.tag_ids.is_empty() {
-        let matched = if filter.match_all_tags {
-            filter.tag_ids.iter().all(|id| task.tag_ids.contains(id))
-        } else {
-            filter.tag_ids.iter().any(|id| task.tag_ids.contains(id))
-        };
-        if !matched {
-            return false;
-        }
-    }
-    let now = OffsetDateTime::now_utc();
-    let offset = time::UtcOffset::current_local_offset().unwrap_or(time::UtcOffset::UTC);
-    let today = now.to_offset(offset).date();
-    let due_date = match &task.due {
-        Due::None => None,
-        Due::Date(date) => Some(*date),
-        Due::DateTime(date_time) => Some(date_time.to_offset(offset).date()),
-    };
-    let smart_view_matches = match filter.base_view {
-        None | Some(SavedBaseView::Trash) => true,
-        Some(SavedBaseView::Inbox) => task.status == TaskStatus::Todo,
-        Some(SavedBaseView::Today) => due_date == Some(today),
-        Some(SavedBaseView::Upcoming) => {
-            due_date.is_some_and(|date| date >= today && date <= today + time::Duration::days(7))
-        }
-        Some(SavedBaseView::Overdue) => {
-            task.status != TaskStatus::Done && task.due.is_overdue(now, today)
-        }
-        Some(SavedBaseView::Undated) => due_date.is_none(),
-        Some(SavedBaseView::Doing) => task.status == TaskStatus::Doing,
-        Some(SavedBaseView::Blocked) => task.status == TaskStatus::Blocked,
-        Some(SavedBaseView::Done) => task.status == TaskStatus::Done,
-        Some(SavedBaseView::Archived) => task.status == TaskStatus::Archived,
-        Some(SavedBaseView::Project(id)) => task.project_id == Some(id),
-        Some(SavedBaseView::Tag(id)) => task.tag_ids.contains(&id),
-    };
-    if !smart_view_matches {
-        return false;
-    }
-    let due_scope_matches = match filter.due_scope {
-        DueScope::Any => true,
-        DueScope::Undated => due_date.is_none(),
-        DueScope::Today => due_date == Some(today),
-        DueScope::Upcoming => {
-            due_date.is_some_and(|date| date >= today && date <= today + time::Duration::days(7))
-        }
-        DueScope::Overdue => task.status != TaskStatus::Done && task.due.is_overdue(now, today),
-    };
-    if !due_scope_matches {
-        return false;
-    }
-    if let Some(from) = filter.due_from {
-        let from_date = from.to_offset(offset).date();
-        if due_date.is_none_or(|date| date < from_date) {
-            return false;
-        }
-    }
-    if let Some(to) = filter.due_to {
-        let to_date = to.to_offset(offset).date();
-        if due_date.is_none_or(|date| date > to_date) {
-            return false;
-        }
-    }
-    true
-}
-
-fn status_filter_matches(statuses: &[TaskStatus], status: TaskStatus) -> bool {
-    statuses.is_empty()
-        || statuses.contains(&status)
-        || (status == TaskStatus::Todo && statuses.contains(&TaskStatus::Inbox))
-}
-
-fn sort_tasks(tasks: &mut [Task], sort: &[SortSpec]) {
-    let specs = if sort.is_empty() {
-        vec![SortSpec::default()]
-    } else {
-        sort.to_vec()
-    };
-    tasks.sort_by(|left, right| {
-        for spec in &specs {
-            let ordering = match spec.field {
-                SortField::Manual => left.sort_order.cmp(&right.sort_order),
-                SortField::Priority => left.priority.cmp(&right.priority),
-                SortField::Due => compare_due(&left.due, &right.due),
-                SortField::UpdatedAt => left.updated_at.cmp(&right.updated_at),
-                SortField::CreatedAt => left.created_at.cmp(&right.created_at),
-                SortField::Title => left.title.to_lowercase().cmp(&right.title.to_lowercase()),
-            };
-            let ordering = match spec.direction {
-                SortDirection::Ascending => ordering,
-                SortDirection::Descending => ordering.reverse(),
-            };
-            if ordering != Ordering::Equal {
-                return ordering;
-            }
-        }
-        left.id.to_string().cmp(&right.id.to_string())
-    });
-}
-
-fn compare_due(left: &Due, right: &Due) -> Ordering {
-    match (left, right) {
-        (Due::None, Due::None) => Ordering::Equal,
-        (Due::None, _) => Ordering::Greater,
-        (_, Due::None) => Ordering::Less,
-        (Due::Date(left), Due::Date(right)) => left.cmp(right),
-        (Due::DateTime(left), Due::DateTime(right)) => left.cmp(right),
-        (Due::Date(left), Due::DateTime(right)) => left.cmp(
-            &right
-                .to_offset(time::UtcOffset::current_local_offset().unwrap_or(time::UtcOffset::UTC))
-                .date(),
-        ),
-        (Due::DateTime(left), Due::Date(right)) => left
-            .to_offset(time::UtcOffset::current_local_offset().unwrap_or(time::UtcOffset::UTC))
-            .date()
-            .cmp(right),
-    }
-}
-
 fn due_columns(due: &Due) -> Result<(&'static str, Option<String>, Option<i64>), RepositoryError> {
     match due {
         Due::None => Ok(("none", None, None)),
@@ -924,6 +771,7 @@ pub enum RepositoryError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::{DueScope, SavedBaseView, SortDirection, SortField};
 
     #[test]
     fn task_round_trip_preserves_due_variants() {
@@ -1309,8 +1157,8 @@ mod tests {
             unassigned_project: true,
             ..TaskFilter::default()
         };
-        assert!(task_matches(&assigned, &filter));
-        assert!(task_matches(&unassigned, &filter));
+        assert!(TaskQuery::new(&filter, now, time::UtcOffset::UTC).matches(&assigned));
+        assert!(TaskQuery::new(&filter, now, time::UtcOffset::UTC).matches(&unassigned));
     }
 
     #[test]
@@ -1324,8 +1172,8 @@ mod tests {
             base_view: Some(SavedBaseView::Project(project.id)),
             ..TaskFilter::default()
         };
-        assert!(task_matches(&assigned, &project_filter));
-        assert!(!task_matches(&unassigned, &project_filter));
+        assert!(TaskQuery::new(&project_filter, now, time::UtcOffset::UTC).matches(&assigned));
+        assert!(!TaskQuery::new(&project_filter, now, time::UtcOffset::UTC).matches(&unassigned));
 
         let mut archived = Task::new("archived", now).unwrap();
         archived.set_status(TaskStatus::Archived, now);
@@ -1333,14 +1181,14 @@ mod tests {
             base_view: Some(SavedBaseView::Archived),
             ..TaskFilter::default()
         };
-        assert!(task_matches(&archived, &archive_filter));
+        assert!(TaskQuery::new(&archive_filter, now, time::UtcOffset::UTC).matches(&archived));
 
         archived.move_to_trash(now);
         let trash_filter = TaskFilter {
             base_view: Some(SavedBaseView::Trash),
             ..TaskFilter::default()
         };
-        assert!(task_matches(&archived, &trash_filter));
+        assert!(TaskQuery::new(&trash_filter, now, time::UtcOffset::UTC).matches(&archived));
     }
 
     #[test]
