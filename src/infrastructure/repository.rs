@@ -2,8 +2,6 @@
 mod catalogs;
 mod mapping;
 mod tasks;
-#[cfg(test)]
-mod tests;
 mod transfer;
 
 use super::{RepositoryError, migrations};

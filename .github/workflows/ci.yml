@@ -61,6 +61,6 @@ jobs:
       - name: Tests
         run: cargo test --locked --all-targets --all-features
       - name: Performance tests (release, serial)
-        run: cargo test --locked --release --lib --all-features performance_ -- --ignored --test-threads=1 --nocapture
+        run: cargo test --locked --release --lib --test integration --all-features performance_ -- --ignored --test-threads=1 --nocapture
       - name: Release build
         run: cargo build --locked --release

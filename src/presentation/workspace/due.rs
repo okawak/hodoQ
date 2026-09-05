@@ -145,3 +145,57 @@ pub(super) fn shift_month(date: Date, delta: i32) -> Date {
     let month = time::Month::try_from(month as u8).expect("month must be valid");
     Date::from_calendar_date(year, month, 1).expect("first day of month must be valid")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn due_input_supports_none_date_and_datetime() {
+        assert_eq!(parse_due("未定").unwrap(), Due::None);
+        assert!(matches!(parse_due("2026-08-28").unwrap(), Due::Date(_)));
+        assert!(matches!(
+            parse_due("2026-08-28 14:30").unwrap(),
+            Due::DateTime(_)
+        ));
+    }
+
+    #[test]
+    fn date_picker_selection_updates_due_input() {
+        let selected = chrono::NaiveDate::from_ymd_opt(2026, 8, 30).unwrap();
+        assert_eq!(
+            picker_due_input_value(PickerDate::from(selected), ""),
+            "2026-08-30"
+        );
+        assert_eq!(
+            picker_due_input_value(PickerDate::from(selected), "2026-08-20 14:30"),
+            "2026-08-30 14:30"
+        );
+        assert_eq!(
+            picker_due_input_value(PickerDate::Single(None), "2026-08-20 14:30"),
+            ""
+        );
+    }
+
+    #[test]
+    fn time_selection_updates_the_unified_due_input() {
+        assert_eq!(
+            due_input_with_time("2026-08-30", Some("14:30")).unwrap(),
+            "2026-08-30 14:30"
+        );
+        assert_eq!(
+            due_input_with_time("2026-08-30 14:30", None).unwrap(),
+            "2026-08-30"
+        );
+        assert!(due_input_with_time("", Some("14:30")).is_err());
+        assert_eq!(due_time_options().len(), 96);
+    }
+
+    #[test]
+    fn calendar_month_starts_on_sunday() {
+        let sunday = Date::from_calendar_date(2026, time::Month::November, 1).unwrap();
+        let saturday = Date::from_calendar_date(2026, time::Month::August, 1).unwrap();
+        assert_eq!(calendar_leading_days(sunday), 0);
+        assert_eq!(calendar_leading_days(saturday), 6);
+    }
+}

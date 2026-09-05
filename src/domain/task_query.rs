@@ -185,6 +185,8 @@ fn compare_task_due(left: &Due, right: &Due, offset: UtcOffset) -> Ordering {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::Project;
+    use std::time::Duration as StdDuration;
     use time::macros::{date, datetime, offset};
 
     #[test]
@@ -341,5 +343,99 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn project_filter_can_include_selected_and_unassigned_tasks() {
+        let now = OffsetDateTime::UNIX_EPOCH;
+        let project = Project::new("project", now);
+        let mut assigned = Task::new("assigned", now).unwrap();
+        assigned.project_id = Some(project.id);
+        let unassigned = Task::new("unassigned", now).unwrap();
+        let filter = TaskFilter {
+            project_ids: vec![project.id],
+            unassigned_project: true,
+            ..TaskFilter::default()
+        };
+        assert!(TaskQuery::new(&filter, now, time::UtcOffset::UTC).matches(&assigned));
+        assert!(TaskQuery::new(&filter, now, time::UtcOffset::UTC).matches(&unassigned));
+    }
+
+    #[test]
+    fn saved_base_views_preserve_project_archive_and_trash_scope() {
+        let now = OffsetDateTime::UNIX_EPOCH;
+        let project = Project::new("project", now);
+        let mut assigned = Task::new("assigned", now).unwrap();
+        assigned.project_id = Some(project.id);
+        let unassigned = Task::new("unassigned", now).unwrap();
+        let project_filter = TaskFilter {
+            base_view: Some(SavedBaseView::Project(project.id)),
+            ..TaskFilter::default()
+        };
+        assert!(TaskQuery::new(&project_filter, now, time::UtcOffset::UTC).matches(&assigned));
+        assert!(!TaskQuery::new(&project_filter, now, time::UtcOffset::UTC).matches(&unassigned));
+
+        let mut archived = Task::new("archived", now).unwrap();
+        archived.set_status(TaskStatus::Archived, now);
+        let archive_filter = TaskFilter {
+            base_view: Some(SavedBaseView::Archived),
+            ..TaskFilter::default()
+        };
+        assert!(TaskQuery::new(&archive_filter, now, time::UtcOffset::UTC).matches(&archived));
+
+        archived.move_to_trash(now);
+        let trash_filter = TaskFilter {
+            base_view: Some(SavedBaseView::Trash),
+            ..TaskFilter::default()
+        };
+        assert!(TaskQuery::new(&trash_filter, now, time::UtcOffset::UTC).matches(&archived));
+    }
+
+    #[test]
+    fn ten_thousand_task_visible_search_finds_matching_task() {
+        check_ten_thousand_task_visible_search();
+    }
+
+    #[test]
+    #[ignore = "run performance_ tests in release mode with --test-threads=1"]
+    #[allow(clippy::assertions_on_constants)]
+    fn performance_ten_thousand_task_visible_search() {
+        // An explicit --ignored debug run should fail, not report misleading timings.
+        assert!(
+            !cfg!(debug_assertions),
+            "performance tests require --release"
+        );
+        let elapsed = check_ten_thousand_task_visible_search();
+        eprintln!("10,000 task visible search: {elapsed:?}");
+        assert!(
+            elapsed < StdDuration::from_millis(100),
+            "10,000 task visible search took {elapsed:?}"
+        );
+    }
+
+    fn check_ten_thousand_task_visible_search() -> StdDuration {
+        let now = OffsetDateTime::UNIX_EPOCH;
+        let tasks = (0..10_000)
+            .map(|index| Task::new(format!("task {index}"), now).unwrap())
+            .collect::<Vec<_>>();
+        let started = std::time::Instant::now();
+        let filter = TaskFilter {
+            query: "task 9999".to_owned(),
+            ..TaskFilter::default()
+        };
+        let query = TaskQuery::new(&filter, now, UtcOffset::UTC);
+        let mut matches = tasks
+            .iter()
+            .filter(|task| query.matches(task))
+            .cloned()
+            .collect::<Vec<_>>();
+        matches.sort_by(|left, right| {
+            compare_tasks(left, right, &[SortSpec::default()], UtcOffset::UTC)
+        });
+        let elapsed = started.elapsed();
+
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].id, tasks[9999].id);
+        elapsed
     }
 }
