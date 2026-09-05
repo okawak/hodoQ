@@ -1,3 +1,4 @@
+mod assets;
 mod theme;
 mod workspace;
 
@@ -42,7 +43,8 @@ pub fn run() -> anyhow::Result<()> {
 
     let window_width = settings.window.width;
     let window_height = settings.window.height;
-    gpui::Application::new().run(move |cx: &mut App| {
+    let app = gpui::Application::new().with_assets(assets::Assets);
+    app.run(move |cx: &mut App| {
         gpui_component::init(cx);
         let shortcuts = if cfg!(target_os = "macos") {
             vec![
