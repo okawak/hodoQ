@@ -14,7 +14,7 @@ use crate::domain::{
 use super::theme;
 
 use super::due::date_to_filter_datetime;
-use super::{SmartView, Workspace};
+use super::{SmartView, Workspace, normalized_statuses};
 use crate::domain::task_query::{TaskQuery, compare_tasks};
 
 impl Workspace {
@@ -501,5 +501,71 @@ impl Workspace {
                 },
             ))
             .into_any_element()
+    }
+}
+
+impl Workspace {
+    pub(super) fn activate_view(
+        &mut self,
+        view: SmartView,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.flush_pending_edits(cx) {
+            return;
+        }
+        self.active_view = view;
+        self.selected_task = None;
+        self.new_task_draft = None;
+        self.sync_management_inputs(view, window, cx);
+        if let SmartView::Saved(id) = view
+            && let Some(saved) = self
+                .saved_views
+                .iter()
+                .find(|saved| saved.id == id)
+                .cloned()
+        {
+            self.view_kind = saved.view_kind;
+            self.filter_statuses = normalized_statuses(&saved.filter.statuses);
+            self.filter_priorities = saved.filter.priorities.iter().copied().collect();
+            self.filter_projects = saved.filter.project_ids.iter().copied().collect();
+            self.filter_unassigned_project = saved.filter.unassigned_project;
+            self.filter_tags = saved.filter.tag_ids.iter().copied().collect();
+            self.filter_match_all_tags = saved.filter.match_all_tags;
+            self.filter_due = saved.filter.due_scope;
+            let offset = UtcOffset::current_local_offset().unwrap_or(UtcOffset::UTC);
+            self.filter_due_from = saved
+                .filter
+                .due_from
+                .map(|date| date.to_offset(offset).date());
+            self.filter_due_to = saved
+                .filter
+                .due_to
+                .map(|date| date.to_offset(offset).date());
+            self.sort = if saved.sort.is_empty() {
+                vec![SortSpec::default()]
+            } else {
+                saved.sort.iter().copied().take(2).collect()
+            };
+            self.group_by = saved.group_by;
+            self.search_input.update(cx, |state, cx| {
+                state.set_value(saved.filter.query, window, cx);
+            });
+            let due_from = self
+                .filter_due_from
+                .map(|date| date.to_string())
+                .unwrap_or_default();
+            let due_to = self
+                .filter_due_to
+                .map(|date| date.to_string())
+                .unwrap_or_default();
+            self.filter_due_from_input.update(cx, |state, cx| {
+                state.set_value(due_from, window, cx);
+            });
+            self.filter_due_to_input.update(cx, |state, cx| {
+                state.set_value(due_to, window, cx);
+            });
+        }
+        cx.notify();
     }
 }

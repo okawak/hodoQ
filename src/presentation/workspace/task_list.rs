@@ -445,8 +445,10 @@ impl Workspace {
                             .ghost()
                             .small()
                             .label("複製")
-                            .on_click(move |_, _, cx| {
-                                entity.update(cx, |this, cx| this.duplicate_task(task_id, cx));
+                            .on_click(move |_, window, cx| {
+                                entity.update(cx, |this, cx| {
+                                    this.duplicate_task(task_id, window, cx)
+                                });
                             })
                     })
                     .when(
@@ -533,8 +535,9 @@ impl Workspace {
                         });
                     }),
                 )
-                .item(PopupMenuItem::new("複製").on_click(move |_, _, cx| {
-                    duplicate_entity.update(cx, |this, cx| this.duplicate_task(task_id, cx));
+                .item(PopupMenuItem::new("複製").on_click(move |_, window, cx| {
+                    duplicate_entity
+                        .update(cx, |this, cx| this.duplicate_task(task_id, window, cx));
                 }))
                 .item(
                     PopupMenuItem::new(if task.status == TaskStatus::Archived {

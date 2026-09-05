@@ -17,13 +17,13 @@ use gpui_component::{
 };
 use time::{OffsetDateTime, UtcOffset};
 
-use crate::domain::{SortSpec, TaskStatus, ViewKind};
+use crate::domain::{TaskStatus, ViewKind};
 
 use super::theme;
 
 use super::due::due_is_today;
 use super::task_query::saved_view_is_available;
-use super::{SmartView, Workspace, normalized_statuses, section_label};
+use super::{SmartView, Workspace, section_label};
 
 impl Workspace {
     pub(super) fn render_toolbar(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -371,59 +371,7 @@ impl Workspace {
             .w_full()
             .on_click(move |_, window, cx| {
                 entity.update(cx, |this, cx| {
-                    this.active_view = view;
-                    this.selected_task = None;
-                    this.new_task_draft = None;
-                    this.sync_management_inputs(view, window, cx);
-                    if let SmartView::Saved(id) = view
-                        && let Some(saved) = this
-                            .saved_views
-                            .iter()
-                            .find(|saved| saved.id == id)
-                            .cloned()
-                    {
-                        this.view_kind = saved.view_kind;
-                        this.filter_statuses = normalized_statuses(&saved.filter.statuses);
-                        this.filter_priorities = saved.filter.priorities.iter().copied().collect();
-                        this.filter_projects = saved.filter.project_ids.iter().copied().collect();
-                        this.filter_unassigned_project = saved.filter.unassigned_project;
-                        this.filter_tags = saved.filter.tag_ids.iter().copied().collect();
-                        this.filter_match_all_tags = saved.filter.match_all_tags;
-                        this.filter_due = saved.filter.due_scope;
-                        let offset = UtcOffset::current_local_offset().unwrap_or(UtcOffset::UTC);
-                        this.filter_due_from = saved
-                            .filter
-                            .due_from
-                            .map(|date| date.to_offset(offset).date());
-                        this.filter_due_to = saved
-                            .filter
-                            .due_to
-                            .map(|date| date.to_offset(offset).date());
-                        this.sort = if saved.sort.is_empty() {
-                            vec![SortSpec::default()]
-                        } else {
-                            saved.sort.iter().copied().take(2).collect()
-                        };
-                        this.group_by = saved.group_by;
-                        this.search_input.update(cx, |state, cx| {
-                            state.set_value(saved.filter.query, window, cx);
-                        });
-                        let due_from = this
-                            .filter_due_from
-                            .map(|date| date.to_string())
-                            .unwrap_or_default();
-                        let due_to = this
-                            .filter_due_to
-                            .map(|date| date.to_string())
-                            .unwrap_or_default();
-                        this.filter_due_from_input.update(cx, |state, cx| {
-                            state.set_value(due_from, window, cx);
-                        });
-                        this.filter_due_to_input.update(cx, |state, cx| {
-                            state.set_value(due_to, window, cx);
-                        });
-                    }
-                    cx.notify();
+                    this.activate_view(view, window, cx);
                 });
             })
             .into_any_element()
