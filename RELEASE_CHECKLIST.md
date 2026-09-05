@@ -5,6 +5,7 @@
 - [ ] `cargo fmt --check`
 - [ ] `cargo clippy --all-targets --all-features -- -D warnings`
 - [ ] `cargo test --all-targets --all-features`
+- [ ] `cargo test --release --lib --all-features performance_ -- --ignored --test-threads=1 --nocapture`（性能テスト2件が実行されること）
 - [ ] Windows／Apple Silicon macOSのCIで`cargo build --release`
 
 ## GUI確認（Windows 11／Apple Silicon macOS）

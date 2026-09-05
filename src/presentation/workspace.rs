@@ -4916,7 +4916,28 @@ mod tests {
     }
 
     #[test]
-    fn ten_thousand_task_visible_search_completes_within_100ms() {
+    fn ten_thousand_task_visible_search_finds_matching_task() {
+        check_ten_thousand_task_visible_search();
+    }
+
+    #[test]
+    #[ignore = "run performance_ tests in release mode with --test-threads=1"]
+    #[allow(clippy::assertions_on_constants)]
+    fn performance_ten_thousand_task_visible_search() {
+        // An explicit --ignored debug run should fail, not report misleading timings.
+        assert!(
+            !cfg!(debug_assertions),
+            "performance tests require --release"
+        );
+        let elapsed = check_ten_thousand_task_visible_search();
+        eprintln!("10,000 task visible search: {elapsed:?}");
+        assert!(
+            elapsed < StdDuration::from_millis(100),
+            "10,000 task visible search took {elapsed:?}"
+        );
+    }
+
+    fn check_ten_thousand_task_visible_search() -> StdDuration {
         let now = OffsetDateTime::UNIX_EPOCH;
         let tasks = (0..10_000)
             .map(|index| Task::new(format!("task {index}"), now).unwrap())
@@ -4931,12 +4952,10 @@ mod tests {
             .cloned()
             .collect::<Vec<_>>();
         matches.sort_by(|left, right| compare_tasks(left, right, &[SortSpec::default()]));
+        let elapsed = started.elapsed();
 
         assert_eq!(matches.len(), 1);
-        assert!(
-            started.elapsed() < StdDuration::from_millis(100),
-            "10,000 task visible search took {:?}",
-            started.elapsed()
-        );
+        assert_eq!(matches[0].id, tasks[9999].id);
+        elapsed
     }
 }

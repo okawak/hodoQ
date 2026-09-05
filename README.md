@@ -93,7 +93,10 @@ cargo run -- --data-dir ./tmp/hodoq-test
 cargo fmt --check
 cargo clippy --all-targets --all-features -- -D warnings
 cargo test --all-targets --all-features
+cargo test --release --lib --all-features performance_ -- --ignored --test-threads=1 --nocapture
 cargo build --release
 ```
 
-CIはWindowsとApple Silicon macOSでテストとリリースビルドを行います。GUIの実機確認項目は [RELEASE_CHECKLIST.md](./RELEASE_CHECKLIST.md)、詳細仕様は [DESIGN.md](./DESIGN.md) を参照してください。
+CIはWindowsとApple Silicon macOSでテストとリリースビルドを行います。10,000件の保存・読込・検索の正しさは通常のテストでも検証し、処理時間の基準（検索100msなど）は最適化済みのリリースビルドで他のテストと並列にせず測定します。性能テストは通常実行ではignoredとなりますが、上記コマンドとCIの専用ステップで必ず実行します。
+
+GUIの実機確認項目は [RELEASE_CHECKLIST.md](./RELEASE_CHECKLIST.md)、詳細仕様は [DESIGN.md](./DESIGN.md) を参照してください。
