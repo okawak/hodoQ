@@ -286,6 +286,10 @@ fn check_due_validation_on_task_save(cx: &mut TestAppContext, new_task: bool) {
     assert!(visual.debug_bounds("due-input-error").is_none());
     workspace.update_in(&mut visual, |this, _, cx| {
         assert!(this.due_input_error.is_none());
+        assert!(
+            this.error_message.is_none(),
+            "correcting the due field must clear its footer error too"
+        );
         assert!(if new_task {
             this.create_task(cx)
         } else {
@@ -301,4 +305,37 @@ fn check_due_validation_on_task_save(cx: &mut TestAppContext, new_task: bool) {
         );
     });
     visual.update(|window, _| window.remove_window());
+}
+
+#[gpui::test]
+fn correcting_due_after_enter_clears_only_the_related_global_error(cx: &mut TestAppContext) {
+    let (_directory, window, workspace) = workspace(cx);
+    window
+        .update(cx, |_, window, cx| {
+            workspace.update(cx, |this, cx| {
+                this.update_due_from_input("2026-02-30", window, cx);
+                assert!(this.due_input_error.is_some());
+                assert_eq!(this.due_input_error, this.error_message);
+                this.sync_due_picker_from_input("2026-02-28", window, cx);
+                assert!(this.due_input_error.is_none());
+                assert!(this.error_message.is_none());
+                assert_eq!(
+                    this.selected_task().unwrap().due,
+                    Due::None,
+                    "valid typing must not implicitly persist the due value"
+                );
+
+                this.update_due_from_input("2026-02-30", window, cx);
+                this.error_message = Some("保存先への書き込みに失敗しました".to_owned());
+                this.sync_due_picker_from_input("2026-02-28", window, cx);
+                assert!(this.due_input_error.is_none());
+                assert_eq!(
+                    this.error_message.as_deref(),
+                    Some("保存先への書き込みに失敗しました"),
+                    "correcting due input must not dismiss an unrelated error"
+                );
+            });
+            window.remove_window();
+        })
+        .unwrap();
 }

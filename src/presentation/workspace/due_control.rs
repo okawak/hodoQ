@@ -115,8 +115,14 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.due_input_error.is_some() {
-            self.due_input_error = parse_due(value).err();
+        if let Some(previous_error) = self.due_input_error.take() {
+            let error = parse_due(value).err();
+            // Only replace the footer message if it still belongs to this field.
+            // A later storage or title error must survive a valid due correction.
+            if self.error_message.as_ref() == Some(&previous_error) {
+                self.error_message = error.clone();
+            }
+            self.due_input_error = error;
         }
         // Partial keyboard input is not an error and must not be written to the task.
         if let Ok(due) = parse_due(value) {
