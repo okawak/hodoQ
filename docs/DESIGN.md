@@ -36,7 +36,7 @@ UIの「高優先度を先頭にする」、非表示の旧分類ビューを除
 
 - `domain/task_query.rs`: 時計・UTCオフセットを引数で受ける検索と比較。クエリ文字列は検索単位で正規化する。
 - `infrastructure/repository.rs`: 接続の初期化と共通の入口。タスクSQL、分類・保存ビュー、バックアップ・出力、行変換は`tasks`・`catalogs`・`transfer`・`mapping`へ分ける。横断履歴トランザクションは親に残す。
-- `presentation/workspace.rs`: ウィンドウが所有する状態、初期化、画面の組み立て。編集、履歴、一覧・ボード・カレンダー、ナビゲーション、データ管理は子モジュールに分ける。
+- `presentation/workspace.rs`: ウィンドウが所有する状態、初期化、終了処理と共通の小さな部品。画面全体の描画は`shell`、機能は下表の子モジュールへ分ける。
 - 既存の納期入力、タスク編集フォーム、リスト操作など、まとまっているモジュールは維持する。
 
 子モジュールは親が所有する状態を利用し、親・兄弟から必要な操作だけ`pub(super)`で公開する。
@@ -44,6 +44,34 @@ UIの「高優先度を先頭にする」、非表示の旧分類ビューを除
 `pub(crate)`は層を跨ぐ内部契約に使う。実装都合の型を無制限に`pub`へ広げない。
 GPUIの単一Entityに属する画面処理は`impl Workspace`を分けてよい。ファイルを分けるためだけのEntity、trait、イベントバスは追加しない。
 独立した状態・ライフサイクルが必要になった時点でコンポーネントを別Entityへ昇格する。
+
+## 画面・アプリケーションの配置
+
+| 変更したい処理 | 配置 |
+| --- | --- |
+| GPUI Entityの状態・初期化・入力購読 | `presentation/workspace.rs` |
+| 画面全体・ツールバー・サイドバー・アクションの登録 | `workspace/shell.rs` |
+| コマンドパレット・キーボード選択 | `workspace/commands.rs` |
+| 保存ビュー・フィルター入力・表示タスクの抽出 | `workspace/views.rs` |
+| 作成・更新・削除・一括操作・選択 | `workspace/task_actions.rs` |
+| 編集フォーム・デバウンス保存・終了前の保存 | `workspace/task_editor.rs` |
+| 仮想リスト・行描画・リストの順序変更 | `workspace/task_list.rs` |
+| ボード／カレンダー | `workspace/board.rs` / `calendar.rs` |
+| 納期の文字列変換／GPUI入力部品 | `workspace/due.rs` / `due_control.rs` |
+| 表示上の優先度・旧保存ビューの表示可否 | `workspace/task_query.rs` |
+| バックアップ・出力・復元のUIと確認画面 | `workspace/data_management.rs` |
+| Undo/Redoのスタック・UI通知 | `workspace/history.rs` |
+| 履歴の適用と関連エンティティの保存 | `application/history.rs` |
+| 日次バックアップの実行・世代管理 | `application/maintenance.rs` |
+
+表内の`workspace/`は`src/presentation/workspace/`を指す。
+分割前の`workspace.rs`約5,000行は約670行に、`repository.rs`約1,400行は約120行になった。
+最大の画面モジュールは約680行で、編集フォームと保存のように同じ状態を扱う処理をまとめている。
+小さな共通関数を置くための汎用`utils`モジュールは設けない。
+
+ライブ検索は空白を保持し、保存ビュー検索は前後の空白を除く既存挙動を維持する。
+それ以外の絞り込み・比較はdomainの共通処理へ渡し、同一検索の時計・UTCオフセットを共有する。
+保存ビューの条件と画面で追加した条件はANDで合成する。ゴミ箱・アーカイブの可視性も共通処理で判定する。
 
 ## データ・エラー・非同期処理の境界
 
@@ -78,10 +106,10 @@ Windows/macOSのCI（release buildを含む）を確認する。
 分割をなぞるだけのテストは追加せず、挙動や不変条件を検証する。
 コミットは署名付きで作成する。PRごとに`@codex review`を依頼し、指摘の採否・根拠を記録して、修正と検証後にマージする。
 
-## 段階計画
+## 実施した段階
 
-1. 設計書の集約と検索・並べ替えのドメイン境界化。
-2. 永続化の責務分割とアプリケーション境界のエラー・データ型整理。
+1. [PR #5](https://github.com/okawak/hodoQ/pull/5): 設計書の集約と検索・並べ替えのドメイン境界化。
+2. [PR #6](https://github.com/okawak/hodoQ/pull/6): 永続化の責務分割とアプリケーション境界のエラー・データ型整理。
 3. Workspaceの責務分割、画面検索の共通化、最終検証。
 
 ## 参照したRust公式資料

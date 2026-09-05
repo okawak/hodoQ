@@ -326,3 +326,114 @@ fn list_metadata_and_actions_fit_with_editor_at_minimum_window_width(cx: &mut Te
     }
     visual.update(|window, _| window.remove_window());
 }
+
+#[gpui::test]
+fn saved_scope_and_live_filters_compose_without_losing_trash_or_archive(cx: &mut TestAppContext) {
+    use super::super::SmartView;
+    use crate::domain::{SavedView, SavedViewId, TaskFilter};
+    let (_directory, window, [a, _, c, d]) = workspace(cx);
+    window
+        .update(cx, |workspace, window, cx| {
+            workspace.set_task_status(a, TaskStatus::Archived, cx);
+            let now = OffsetDateTime::now_utc();
+            let view = SavedView {
+                id: SavedViewId::new(),
+                name: "archive included".into(),
+                view_kind: ViewKind::List,
+                filter: TaskFilter {
+                    include_archived: true,
+                    ..Default::default()
+                },
+                sort: vec![SortSpec::default()],
+                group_by: None,
+                sort_order: 0,
+                created_at: now,
+                updated_at: now,
+            };
+            workspace.active_view = SmartView::Saved(view.id);
+            workspace.saved_views.push(view);
+            workspace.filter_priorities.insert(Priority::Low);
+            assert_eq!(task_ids(workspace.visible_tasks(cx)), [a, c, d]);
+            workspace.filter_statuses.insert(TaskStatus::Todo);
+            assert_eq!(task_ids(workspace.visible_tasks(cx)), [c]);
+            workspace.move_to_trash(c, cx);
+            workspace
+                .saved_views
+                .last_mut()
+                .unwrap()
+                .filter
+                .only_deleted = true;
+            assert_eq!(task_ids(workspace.visible_tasks(cx)), [c]);
+            workspace.saved_views.last_mut().unwrap().filter.query = " C ".into();
+            workspace
+                .search_input
+                .update(cx, |state, cx| state.set_value(" C ", window, cx));
+            assert!(workspace.visible_tasks(cx).is_empty());
+            workspace
+                .search_input
+                .update(cx, |state, cx| state.set_value("c", window, cx));
+            assert_eq!(task_ids(workspace.visible_tasks(cx)), [c]);
+            workspace.active_view = SmartView::Saved(SavedViewId::new());
+            assert!(workspace.visible_tasks(cx).is_empty());
+            window.remove_window();
+        })
+        .unwrap();
+}
+
+#[gpui::test]
+fn undo_redo_acknowledge_storage_and_preserve_history_on_failure(cx: &mut TestAppContext) {
+    let (_directory, window, [a, _, _, _]) = workspace(cx);
+    window
+        .update(cx, |workspace, window, cx| {
+            workspace.set_task_status(a, TaskStatus::Done, cx);
+            workspace.undo(cx);
+            assert_eq!(
+                workspace
+                    .tasks
+                    .iter()
+                    .find(|task| task.id == a)
+                    .unwrap()
+                    .status,
+                TaskStatus::Todo
+            );
+            assert_eq!(
+                workspace
+                    .worker
+                    .load()
+                    .unwrap()
+                    .tasks
+                    .iter()
+                    .find(|task| task.id == a)
+                    .unwrap()
+                    .status,
+                TaskStatus::Todo
+            );
+            workspace.redo(cx);
+            let before = workspace.tasks.clone();
+            let connection = rusqlite::Connection::open(&workspace.paths.database).unwrap();
+            connection.pragma_update(None, "user_version", 999).unwrap();
+            drop(connection);
+            workspace.worker = TaskApplication::start(&workspace.paths.database).unwrap();
+            assert!(workspace.worker.is_read_only());
+            let undo_len = workspace.undo_stack.len();
+            workspace.undo(cx);
+            assert_eq!(workspace.tasks, before);
+            assert_eq!(workspace.undo_stack.len(), undo_len);
+            assert!(workspace.redo_stack.is_empty());
+            assert!(workspace.error_message.is_some());
+            assert_eq!(
+                workspace
+                    .worker
+                    .load()
+                    .unwrap()
+                    .tasks
+                    .iter()
+                    .find(|task| task.id == a)
+                    .unwrap()
+                    .status,
+                TaskStatus::Done
+            );
+            window.remove_window();
+        })
+        .unwrap();
+}

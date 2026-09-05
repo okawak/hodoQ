@@ -145,13 +145,3 @@ pub(super) fn shift_month(date: Date, delta: i32) -> Date {
     let month = time::Month::try_from(month as u8).expect("month must be valid");
     Date::from_calendar_date(year, month, 1).expect("first day of month must be valid")
 }
-
-pub(super) fn due_is_upcoming(due: &Due, today: Date, offset: UtcOffset) -> bool {
-    let end = today + time::Duration::days(7);
-    let date = match due {
-        Due::None => return false,
-        Due::Date(date) => *date,
-        Due::DateTime(date_time) => date_time.to_offset(offset).date(),
-    };
-    date >= today && date <= end
-}
