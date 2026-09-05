@@ -347,8 +347,13 @@ impl Workspace {
 
 impl Workspace {
     pub(super) fn select_task(&mut self, id: TaskId, window: &mut Window, cx: &mut Context<Self>) {
-        if self.selected_task != Some(id) {
-            self.flush_pending_edits(cx);
+        if self.selected_task == Some(id) {
+            self.selection_anchor = Some(id);
+            cx.notify();
+            return;
+        }
+        if !self.flush_pending_edits(cx) {
+            return;
         }
         self.selected_task = Some(id);
         self.new_task_draft = None;
@@ -357,13 +362,17 @@ impl Workspace {
         cx.notify();
     }
 
-    pub(super) fn flush_pending_edits(&mut self, cx: &mut Context<Self>) {
+    #[must_use]
+    pub(super) fn flush_pending_edits(&mut self, cx: &mut Context<Self>) -> bool {
         self.title_revision = self.title_revision.wrapping_add(1);
         self.memo_revision = self.memo_revision.wrapping_add(1);
         if let Err(message) = self.persist_pending_edits() {
             self.set_pending_edit_error(message);
+            cx.notify();
+            return false;
         }
         cx.notify();
+        true
     }
 
     pub(super) fn persist_pending_edits(&mut self) -> Result<(), String> {
@@ -514,14 +523,16 @@ impl Workspace {
         let Some(id) = self.selected_task else {
             return;
         };
-        if title.trim().is_empty() || title.chars().count() > 500 {
-            self.error_message = Some("タイトルは1〜500文字で入力してください".to_owned());
-            cx.notify();
-            return;
-        }
+        let invalid = title.trim().is_empty() || title.chars().count() > 500;
         self.title_revision = self.title_revision.wrapping_add(1);
         let revision = self.title_revision;
         self.pending_title = Some((id, title));
+        if invalid {
+            self.error_message = Some("タイトルは1〜500文字で入力してください".to_owned());
+            self.status_message = "入力エラー".to_owned();
+            cx.notify();
+            return;
+        }
         self.status_message = "編集中…".to_owned();
         cx.spawn(async move |this, cx| {
             Timer::after(StdDuration::from_millis(400)).await;
@@ -680,3 +691,6 @@ pub(super) fn apply_pending_edits(
     }
     Ok(changed)
 }
+
+#[cfg(test)]
+mod tests;

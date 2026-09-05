@@ -18,11 +18,11 @@ use super::{NewTaskDraft, Workspace};
 
 impl Workspace {
     pub(super) fn open_new_task_form(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.selected_task.is_some() && !self.flush_pending_edits(cx) {
+            return;
+        }
         self.dismiss_due_popover(cx);
         self.due_input_error = None;
-        if self.selected_task.is_some() {
-            self.flush_pending_edits(cx);
-        }
         self.selected_task = None;
         self.new_task_draft = Some(NewTaskDraft::default());
         self.title_input
@@ -42,10 +42,10 @@ impl Workspace {
     }
 
     pub(super) fn close_task_form(&mut self, cx: &mut Context<Self>) {
-        self.dismiss_due_popover(cx);
-        if self.selected_task.is_some() {
-            self.flush_pending_edits(cx);
+        if self.selected_task.is_some() && !self.flush_pending_edits(cx) {
+            return;
         }
+        self.dismiss_due_popover(cx);
         self.selected_task = None;
         self.new_task_draft = None;
         cx.notify();
@@ -155,7 +155,15 @@ impl Workspace {
         }
     }
 
-    pub(super) fn duplicate_task(&mut self, id: TaskId, cx: &mut Context<Self>) {
+    pub(super) fn duplicate_task(
+        &mut self,
+        id: TaskId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.flush_pending_edits(cx) {
+            return;
+        }
         let Some(source) = self.tasks.iter().find(|task| task.id == id).cloned() else {
             return;
         };
@@ -182,8 +190,11 @@ impl Workspace {
             return;
         }
         self.push_task_history(vec![(None, Some(copy.clone()))]);
-        self.selected_task = Some(copy.id);
+        let copy_id = copy.id;
         self.tasks.push(copy);
+        if self.new_task_draft.is_none() {
+            self.select_task(copy_id, window, cx);
+        }
         self.status_message = "タスクを複製しました".to_owned();
         cx.notify();
     }
@@ -334,6 +345,9 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if (shift || secondary) && !self.flush_pending_edits(cx) {
+            return;
+        }
         if shift {
             let tasks = self.visible_tasks(cx);
             let anchor = self.selection_anchor.or(self.selected_task).unwrap_or(id);
@@ -401,6 +415,9 @@ impl Workspace {
     }
 
     pub(super) fn move_to_trash(&mut self, id: TaskId, cx: &mut Context<Self>) {
+        if self.selected_task == Some(id) && !self.flush_pending_edits(cx) {
+            return;
+        }
         let now = OffsetDateTime::now_utc();
         let mut history = None;
         if let Some(task) = self.tasks.iter_mut().find(|task| task.id == id) {
