@@ -38,6 +38,7 @@ mod task_editor;
 mod task_list;
 mod task_query;
 
+use crate::domain::task_query::{TaskQuery, compare_tasks};
 use due::*;
 use task_query::*;
 
@@ -1881,6 +1882,14 @@ impl Workspace {
         let now = OffsetDateTime::now_utc();
         let offset = UtcOffset::current_local_offset().unwrap_or(UtcOffset::UTC);
         let today = now.to_offset(offset).date();
+        let saved_query = match self.active_view {
+            SmartView::Saved(id) => self
+                .saved_views
+                .iter()
+                .find(|view| view.id == id)
+                .map(|view| TaskQuery::new(&view.filter, now, offset)),
+            _ => None,
+        };
         let mut tasks = self
             .tasks
             .iter()
@@ -1944,11 +1953,9 @@ impl Workspace {
                 }
                 match self.active_view {
                     SmartView::Trash => task.deleted_at.is_some(),
-                    SmartView::Saved(id) => self
-                        .saved_views
-                        .iter()
-                        .find(|view| view.id == id)
-                        .is_some_and(|view| task_matches_saved_view(task, view)),
+                    SmartView::Saved(_) => saved_query
+                        .as_ref()
+                        .is_some_and(|query| query.matches(task)),
                     _ if task.deleted_at.is_some() => false,
                     SmartView::Archived => task.status == TaskStatus::Archived,
                     _ if task.status == TaskStatus::Archived => false,
@@ -1966,7 +1973,7 @@ impl Workspace {
             })
             .cloned()
             .collect::<Vec<_>>();
-        tasks.sort_by(|left, right| compare_tasks(left, right, &self.sort));
+        tasks.sort_by(|left, right| compare_tasks(left, right, &self.sort, offset));
         if self.view_kind == ViewKind::List {
             self.order_list_tasks(&mut tasks);
         }
@@ -4402,12 +4409,6 @@ fn normalized_statuses(statuses: &[TaskStatus]) -> HashSet<TaskStatus> {
         .collect()
 }
 
-fn status_filter_matches(statuses: &[TaskStatus], status: TaskStatus) -> bool {
-    statuses.is_empty()
-        || statuses.contains(&status)
-        || (status == TaskStatus::Todo && statuses.contains(&TaskStatus::Inbox))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4951,7 +4952,9 @@ mod tests {
             })
             .cloned()
             .collect::<Vec<_>>();
-        matches.sort_by(|left, right| compare_tasks(left, right, &[SortSpec::default()]));
+        matches.sort_by(|left, right| {
+            compare_tasks(left, right, &[SortSpec::default()], UtcOffset::UTC)
+        });
         let elapsed = started.elapsed();
 
         assert_eq!(matches.len(), 1);
