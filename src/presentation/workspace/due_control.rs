@@ -199,6 +199,7 @@ impl Workspace {
                 // Keep validation local so title/memo autosave cannot clear this error.
                 this.child(
                     div()
+                        .debug_selector(|| "due-input-error".to_owned())
                         .text_size(px(12.))
                         .text_color(theme::DANGER)
                         .child(error),

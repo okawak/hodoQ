@@ -232,3 +232,73 @@ fn due_popover_new_task_and_task_switch_do_not_leak_state(cx: &mut TestAppContex
     });
     visual.update(|window, _| window.remove_window());
 }
+
+#[gpui::test]
+fn due_validation_on_new_task_save_keeps_invalid_input(cx: &mut TestAppContext) {
+    check_due_validation_on_task_save(cx, true);
+}
+
+#[gpui::test]
+fn due_validation_on_existing_task_save_keeps_invalid_input(cx: &mut TestAppContext) {
+    check_due_validation_on_task_save(cx, false);
+}
+
+fn check_due_validation_on_task_save(cx: &mut TestAppContext, new_task: bool) {
+    let (_directory, window, workspace) = workspace(cx);
+    let mut visual = VisualTestContext::from_window(*window, cx);
+    visual.simulate_resize(size(px(1200.), px(1400.)));
+    let initial_tasks = workspace.update_in(&mut visual, |this, window, cx| {
+        if new_task {
+            this.open_new_task_form(window, cx);
+            this.title_input.update(cx, |state, cx| {
+                state.set_value("保存時の納期検証", window, cx);
+            });
+        } else {
+            this.update_due_from_input("2026-09-08", window, cx);
+        }
+        this.due_input.update(cx, |state, cx| {
+            state.set_value("2026-02-30", window, cx);
+        });
+        let initial = this.worker.load().unwrap().tasks;
+        assert!(this.due_input_error.is_none());
+        // Invoke the save-button path without Enter or the calendar's confirm button.
+        assert!(!if new_task {
+            this.create_task(cx)
+        } else {
+            this.save_selected_task_form(cx)
+        });
+        assert!(this.due_input_error.is_some());
+        assert_eq!(this.due_input_error, this.error_message);
+        assert_eq!(this.due_input.read(cx).value().as_str(), "2026-02-30");
+        assert_eq!(this.worker.load().unwrap().tasks, initial);
+        initial
+    });
+    visual.run_until_parked();
+    let input = visual.debug_bounds("due-input-control").unwrap();
+    let error = visual.debug_bounds("due-input-error").unwrap();
+    assert!(error.top() >= input.bottom());
+    workspace.update_in(&mut visual, |this, window, cx| {
+        this.due_input.update(cx, |state, cx| {
+            state.set_value("2026-02-28", window, cx);
+        });
+    });
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("due-input-error").is_none());
+    workspace.update_in(&mut visual, |this, _, cx| {
+        assert!(this.due_input_error.is_none());
+        assert!(if new_task {
+            this.create_task(cx)
+        } else {
+            this.save_selected_task_form(cx)
+        });
+        assert!(this.due_input_error.is_none());
+        let stored = this.worker.load().unwrap().tasks;
+        assert_eq!(stored.len(), initial_tasks.len() + usize::from(new_task));
+        assert!(
+            stored
+                .iter()
+                .any(|task| task.due == parse_due("2026-02-28").unwrap())
+        );
+    });
+    visual.update(|window, _| window.remove_window());
+}

@@ -748,8 +748,12 @@ impl Workspace {
         let now = OffsetDateTime::now_utc();
         let title = self.title_input.read(cx).value().to_string();
         let due = match parse_due(self.due_input.read(cx).value().as_str()) {
-            Ok(due) => due,
+            Ok(due) => {
+                self.due_input_error = None;
+                due
+            }
             Err(message) => {
+                self.due_input_error = Some(message.clone());
                 self.error_message = Some(message);
                 cx.notify();
                 return false;
@@ -1684,8 +1688,12 @@ impl Workspace {
         }
         after.memo = self.memo_input.read(cx).value().to_string();
         after.due = match parse_due(self.due_input.read(cx).value().as_str()) {
-            Ok(due) => due,
+            Ok(due) => {
+                self.due_input_error = None;
+                due
+            }
             Err(message) => {
+                self.due_input_error = Some(message.clone());
                 self.error_message = Some(message);
                 cx.notify();
                 return false;
