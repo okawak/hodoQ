@@ -6,7 +6,7 @@ HodoQ（ホドキュー）は、Rust／GPUIとSQLiteで作られた、ローカ�
 
 - Windows 11（x86_64、最新安定版）
 - macOS（Apple Silicon、最新安定版）
-- Rust 1.98.0（`rust-toolchain.toml`で自動選択）
+- Rust 1.98.1（`rust-toolchain.toml`で自動選択）
 
 WindowsではVisual Studio Build Toolsの「C++によるデスクトップ開発」、MSVC、Windows SDKを入れてください。macOSではXcode Command Line Toolsを入れてください。
 

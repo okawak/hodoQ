@@ -94,6 +94,15 @@ SQLite接続は専用スレッドが一つ所有する。チャネルの要求�
 既存のUUID newtypeと状態enumを維持し、文字列や整数による識別子の混同を避ける。
 型や依存の変更を目的化せず、使われているライブラリは理由なく更新・追加しない。
 
+## ツールチェーンと依存の更新
+
+開発・CIのRust版と`clippy`・`rustfmt`は`rust-toolchain.toml`に集約する。
+CIは`rustup show active-toolchain`で同ファイルのツールチェーンを導入する。
+`Cargo.toml`の`rust-version`は最低対応版（MSRV）の宣言であり、ツールチェーン固定とは用途が異なる。
+このアプリでは固定版で検証し、別のMSRVを保証しないため省略する。
+依存の再現性はコミット済みの`Cargo.lock`とCIの`--locked`で保つ。
+依存を更新するときは`cargo update`を実行し、下記の検証とレビューを行う。
+
 ## 検証と変更サイクル
 
 各PRで以下を確認する。
