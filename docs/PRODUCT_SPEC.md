@@ -11,7 +11,7 @@
 | 文書種別 | 基本設計書 |
 | 対象バージョン | 最終目標 1.0.0（段階実装） |
 | 対象OS | 最新安定版Windows 11、最新安定版macOS（Apple Silicon） |
-| 実装言語 | Rust 1.98以上、Edition 2024 |
+| 実装言語 | Rust（版は`rust-toolchain.toml`で指定）、Edition 2024 |
 | GUI | GPUI |
 | 永続化 | SQLite + `rusqlite` |
 
@@ -836,7 +836,7 @@ hodoq/
 - 公開範囲は最小化し、外部公開が不要な要素には`pub(crate)`を使用する。
 - 大量のglob再公開は避け、API境界で必要な型だけを明示的に再公開する。
 - 通常のモジュール解決を使い、特別な理由がない限り`#[path]`属性は使用しない。
-- `Cargo.toml`では`edition = "2024"`と`rust-version = "1.98"`を指定し、`rust-toolchain.toml`でもツールチェーンを固定する。
+- `Cargo.toml`では`edition = "2024"`を指定し、開発・CIで使用するRustの版と追加コンポーネントは`rust-toolchain.toml`に集約する。最低対応Rust版（MSRV）は別途保証しない。
 
 ## 15. テスト方針
 

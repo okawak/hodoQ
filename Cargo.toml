@@ -2,7 +2,6 @@
 name = "hodoq"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.98"
 description = "A lightweight, local-first personal task manager"
 license = "MIT"
 
@@ -28,7 +27,7 @@ uuid = { version = "1.18", features = ["serde", "v4"] }
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging"] }
 
 [dev-dependencies]
-gpui = { version = "0.2.2", features = ["runtime_shaders", "test-support"] }
+gpui = { version = "0.2.2", features = ["test-support"] }
 tempfile = "3.21"
 
 [profile.release]

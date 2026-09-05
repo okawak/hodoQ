@@ -26,10 +26,9 @@ jobs:
       CARGO_PROFILE_DEV_DEBUG: line-tables-only
     steps:
       - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: 1.98.0
-          components: rustfmt, clippy
+      - name: Install the pinned Rust toolchain
+        # rustup reads the channel and components from rust-toolchain.toml.
+        run: rustup show active-toolchain
       - name: Verify Apple Silicon runner
         if: runner.os == 'macOS'
         shell: bash
