@@ -1,12 +1,25 @@
 use gpui::{
-    AnyElement, Context, FontWeight, IntoElement, ParentElement as _, Styled as _, div,
-    prelude::FluentBuilder as _, px, uniform_list,
+    AnyElement, AppContext as _, Context, FontWeight, InteractiveElement as _, IntoElement,
+    ParentElement as _, SharedString, StatefulInteractiveElement as _, Styled as _, div,
+    prelude::FluentBuilder as _, px,
 };
+use gpui_component::{
+    Disableable as _, Sizable as _,
+    button::{Button, ButtonVariants as _},
+    checkbox::Checkbox,
+    menu::{ContextMenuExt as _, PopupMenuItem},
+    progress::Progress,
+};
+use time::{OffsetDateTime, UtcOffset};
 
-use crate::domain::{Due, GroupBy, Priority, SortField, Task, TaskId};
+use crate::domain::{Due, GroupBy, Priority, SortField, Task, TaskId, TaskStatus};
 
-use super::{Workspace, prioritize_list_tasks, theme};
+use super::theme;
 
+use super::due::{due_date, format_due_display};
+use super::task_query::prioritize_list_tasks;
+use super::{SmartView, TaskDrag, Workspace, priority_color};
+use gpui::uniform_list;
 #[cfg(test)]
 mod tests;
 
@@ -205,5 +218,362 @@ impl Workspace {
                 Due::DateTime(date_time) => date_time.date().to_string(),
             },
         }
+    }
+}
+
+impl Workspace {
+    fn render_task_row(
+        &self,
+        task: Task,
+        can_move_up: bool,
+        can_move_down: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let task_id = task.id;
+        let selected =
+            self.selected_task == Some(task_id) || self.selected_tasks.contains(&task_id);
+        let selection_mode = self.selection_mode;
+        let multi_selected = self.selected_tasks.contains(&task_id);
+        let checkbox_entity = cx.entity();
+        let row_entity = cx.entity();
+        let context_entity = cx.entity();
+        let drop_entity = cx.entity();
+        let drag_task = TaskDrag {
+            id: task_id,
+            title: task.title.clone(),
+        };
+        let due = format_due_display(&task.due);
+        let row_debug_selector = if due.is_empty() {
+            "task-row-undated"
+        } else {
+            "task-row-dated"
+        };
+        let priority_color = priority_color(task.priority);
+        let now = OffsetDateTime::now_utc();
+        let offset = UtcOffset::current_local_offset().unwrap_or(UtcOffset::UTC);
+        let today = now.to_offset(offset).date();
+        let due_color = if task.status != TaskStatus::Done && task.due.is_overdue(now, today) {
+            theme::DANGER
+        } else if due_date(&task.due)
+            .is_some_and(|date| date == today || date == today + time::Duration::days(1))
+        {
+            theme::WARNING
+        } else {
+            theme::MUTED
+        };
+        div()
+            .id(SharedString::from(format!("task-{task_id}")))
+            .debug_selector(move || row_debug_selector.to_owned())
+            .flex()
+            .flex_col()
+            .w_full()
+            .min_w_0()
+            .gap_3()
+            .p_3()
+            .rounded_lg()
+            .border_1()
+            .border_color(if selected {
+                theme::ACCENT
+            } else {
+                theme::BORDER
+            })
+            .bg(if selected {
+                theme::SURFACE_HOVER
+            } else {
+                theme::SURFACE
+            })
+            .cursor_move()
+            .hover(|style| style.bg(theme::SURFACE_HOVER))
+            .on_drag(drag_task, |task, _, _, cx| {
+                let task = task.clone();
+                cx.new(|_| task)
+            })
+            .on_drop(move |dragged: &TaskDrag, _, cx| {
+                drop_entity.update(cx, |this, cx| {
+                    this.swap_task_order(dragged.id, task_id, cx);
+                });
+            })
+            .on_click(
+                cx.listener(move |this, event: &gpui::ClickEvent, window, cx| {
+                    let modifiers = event.modifiers();
+                    this.handle_task_click(
+                        task_id,
+                        modifiers.shift,
+                        modifiers.secondary(),
+                        window,
+                        cx,
+                    );
+                }),
+            )
+            .child(
+                div()
+                    .flex()
+                    .w_full()
+                    .min_w_0()
+                    .items_center()
+                    .gap_3()
+                    .child(
+                        Checkbox::new(SharedString::from(format!("complete-{task_id}")))
+                            .checked(if selection_mode {
+                                multi_selected
+                            } else {
+                                task.status == TaskStatus::Done
+                            })
+                            .on_click(move |checked, _, cx| {
+                                checkbox_entity.update(cx, |this, cx| {
+                                    if selection_mode {
+                                        this.toggle_task_selection(task_id, *checked, cx);
+                                    } else {
+                                        this.set_task_status(
+                                            task_id,
+                                            if *checked {
+                                                TaskStatus::Done
+                                            } else {
+                                                TaskStatus::Todo
+                                            },
+                                            cx,
+                                        );
+                                    }
+                                });
+                            }),
+                    )
+                    .child(
+                        div()
+                            .debug_selector(move || format!("task-info-{task_id}"))
+                            .flex()
+                            .flex_col()
+                            .gap_1()
+                            .flex_1()
+                            .min_w_0()
+                            .child(
+                                div()
+                                    .text_ellipsis()
+                                    .text_color(if task.status == TaskStatus::Done {
+                                        theme::MUTED
+                                    } else {
+                                        theme::TEXT
+                                    })
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .when(task.status == TaskStatus::Done, |title| {
+                                        title.line_through()
+                                    })
+                                    .child(task.title),
+                            )
+                            .child(
+                                div()
+                                    .flex()
+                                    .min_w_0()
+                                    .items_center()
+                                    .gap_3()
+                                    .text_size(px(12.0))
+                                    .text_color(theme::MUTED)
+                                    .child(div().flex_1().min_w_0().text_ellipsis().child(
+                                        if task.status == TaskStatus::Blocked {
+                                            "⏸ 保留"
+                                        } else {
+                                            task.status.label()
+                                        },
+                                    ))
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .min_w_0()
+                                            .text_ellipsis()
+                                            .text_color(priority_color)
+                                            .child(format!("優先度 {}", task.priority.label())),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .debug_selector(move || format!("task-due-{task_id}"))
+                                    .w_full()
+                                    .min_w_0()
+                                    .max_w(px(176.0))
+                                    .text_ellipsis()
+                                    .text_size(px(12.0))
+                                    .text_color(due_color)
+                                    .child(if due.is_empty() {
+                                        "納期なし".to_owned()
+                                    } else {
+                                        due
+                                    }),
+                            )
+                            .child(Progress::new().value(f32::from(task.progress))),
+                    ),
+            )
+            // Every row uses the same single-line metadata and wrapping action layout,
+            // keeping uniform_list item heights independent of title and due contents.
+            .child(
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .w_full()
+                    .min_w_0()
+                    .items_center()
+                    .gap_2()
+                    .child(
+                        div()
+                            .w(px(44.0))
+                            .flex_shrink_0()
+                            .child(format!("{}%", task.progress)),
+                    )
+                    .child({
+                        let entity = cx.entity();
+                        Button::new(SharedString::from(format!("move-up-{task_id}")))
+                            .ghost()
+                            .small()
+                            .label("↑")
+                            .disabled(!can_move_up)
+                            .on_click(move |_, _, cx| {
+                                entity.update(cx, |this, cx| this.move_task_order(task_id, -1, cx));
+                            })
+                    })
+                    .child({
+                        let entity = cx.entity();
+                        Button::new(SharedString::from(format!("move-down-{task_id}")))
+                            .ghost()
+                            .small()
+                            .label("↓")
+                            .disabled(!can_move_down)
+                            .on_click(move |_, _, cx| {
+                                entity.update(cx, |this, cx| this.move_task_order(task_id, 1, cx));
+                            })
+                    })
+                    .child({
+                        let entity = cx.entity();
+                        Button::new(SharedString::from(format!("duplicate-{task_id}")))
+                            .ghost()
+                            .small()
+                            .label("複製")
+                            .on_click(move |_, _, cx| {
+                                entity.update(cx, |this, cx| this.duplicate_task(task_id, cx));
+                            })
+                    })
+                    .when(
+                        !matches!(self.active_view, SmartView::Trash | SmartView::Archived),
+                        |row| {
+                            let entity = cx.entity();
+                            row.child(
+                                Button::new(SharedString::from(format!("archive-{task_id}")))
+                                    .ghost()
+                                    .small()
+                                    .label("保管")
+                                    .on_click(move |_, _, cx| {
+                                        entity.update(cx, |this, cx| {
+                                            this.set_task_status(task_id, TaskStatus::Archived, cx);
+                                        });
+                                    }),
+                            )
+                        },
+                    )
+                    .when(self.active_view == SmartView::Archived, |row| {
+                        let entity = cx.entity();
+                        row.child(
+                            Button::new(SharedString::from(format!("unarchive-{task_id}")))
+                                .ghost()
+                                .small()
+                                .label("未着手へ")
+                                .on_click(move |_, _, cx| {
+                                    entity.update(cx, |this, cx| {
+                                        this.set_task_status(task_id, TaskStatus::Todo, cx);
+                                    });
+                                }),
+                        )
+                    })
+                    .child(
+                        Button::new(SharedString::from(format!("delete-{task_id}")))
+                            .debug_selector(move || format!("task-delete-{task_id}"))
+                            .ghost()
+                            .danger()
+                            .small()
+                            .label(if self.active_view == SmartView::Trash {
+                                "復元"
+                            } else {
+                                "削除"
+                            })
+                            .on_click(move |_, _, cx| {
+                                row_entity.update(cx, |this, cx| {
+                                    if this.active_view == SmartView::Trash {
+                                        this.restore_task(task_id, cx);
+                                    } else {
+                                        this.move_to_trash(task_id, cx);
+                                    }
+                                });
+                            }),
+                    ),
+            )
+            .context_menu(move |menu, _, _| {
+                let edit_entity = context_entity.clone();
+                let done_entity = context_entity.clone();
+                let duplicate_entity = context_entity.clone();
+                let archive_entity = context_entity.clone();
+                let delete_entity = context_entity.clone();
+                menu.item(
+                    PopupMenuItem::new("編集を開く").on_click(move |_, window, cx| {
+                        edit_entity.update(cx, |this, cx| this.select_task(task_id, window, cx));
+                    }),
+                )
+                .item(
+                    PopupMenuItem::new(if task.status == TaskStatus::Done {
+                        "未完了へ戻す"
+                    } else {
+                        "完了にする"
+                    })
+                    .on_click(move |_, _, cx| {
+                        done_entity.update(cx, |this, cx| {
+                            this.set_task_status(
+                                task_id,
+                                if task.status == TaskStatus::Done {
+                                    TaskStatus::Todo
+                                } else {
+                                    TaskStatus::Done
+                                },
+                                cx,
+                            );
+                        });
+                    }),
+                )
+                .item(PopupMenuItem::new("複製").on_click(move |_, _, cx| {
+                    duplicate_entity.update(cx, |this, cx| this.duplicate_task(task_id, cx));
+                }))
+                .item(
+                    PopupMenuItem::new(if task.status == TaskStatus::Archived {
+                        "未着手へ戻す"
+                    } else {
+                        "アーカイブ"
+                    })
+                    .on_click(move |_, _, cx| {
+                        archive_entity.update(cx, |this, cx| {
+                            this.set_task_status(
+                                task_id,
+                                if task.status == TaskStatus::Archived {
+                                    TaskStatus::Todo
+                                } else {
+                                    TaskStatus::Archived
+                                },
+                                cx,
+                            );
+                        });
+                    }),
+                )
+                .separator()
+                .item(
+                    PopupMenuItem::new(if task.deleted_at.is_some() {
+                        "ゴミ箱から復元"
+                    } else {
+                        "ゴミ箱へ移動"
+                    })
+                    .on_click(move |_, _, cx| {
+                        delete_entity.update(cx, |this, cx| {
+                            if task.deleted_at.is_some() {
+                                this.restore_task(task_id, cx);
+                            } else {
+                                this.move_to_trash(task_id, cx);
+                            }
+                        });
+                    }),
+                )
+            })
+            .into_any_element()
     }
 }

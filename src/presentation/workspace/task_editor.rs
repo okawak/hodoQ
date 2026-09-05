@@ -1,8 +1,8 @@
-use super::{Workspace, labeled_input, section_label, theme};
-use crate::domain::{Priority, TaskId, TaskStatus};
+use std::time::Duration as StdDuration;
+
 use gpui::{
     AnyElement, Context, FontWeight, InteractiveElement as _, IntoElement, ParentElement as _,
-    SharedString, Styled as _, Window, div, px,
+    SharedString, Styled as _, Timer, Window, div, px,
 };
 use gpui_component::{
     Selectable as _, Sizable as _,
@@ -11,7 +11,16 @@ use gpui_component::{
     progress::Progress,
     scroll::ScrollableElement as _,
 };
+use time::OffsetDateTime;
 
+use crate::domain::{Priority, Task, TaskId, TaskStatus};
+
+use super::theme;
+
+use super::due::{format_due_input, parse_due, picker_date_from_due};
+use super::{
+    PendingConfirmation, SmartView, Workspace, labeled_input, section_label, smart_view_setting,
+};
 // The scroll viewport owns a non-shrinking form so short windows cannot compress controls.
 impl Workspace {
     fn render_new_task_detail(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
@@ -334,4 +343,340 @@ impl Workspace {
             )
             .into_any_element()
     }
+}
+
+impl Workspace {
+    pub(super) fn select_task(&mut self, id: TaskId, window: &mut Window, cx: &mut Context<Self>) {
+        if self.selected_task != Some(id) {
+            self.flush_pending_edits(cx);
+        }
+        self.selected_task = Some(id);
+        self.new_task_draft = None;
+        self.selection_anchor = Some(id);
+        self.sync_detail_inputs(window, cx);
+        cx.notify();
+    }
+
+    pub(super) fn flush_pending_edits(&mut self, cx: &mut Context<Self>) {
+        self.title_revision = self.title_revision.wrapping_add(1);
+        self.memo_revision = self.memo_revision.wrapping_add(1);
+        if let Err(message) = self.persist_pending_edits() {
+            self.set_pending_edit_error(message);
+        }
+        cx.notify();
+    }
+
+    pub(super) fn persist_pending_edits(&mut self) -> Result<(), String> {
+        if self.pending_title.is_none() && self.pending_memo.is_none() {
+            return Ok(());
+        }
+        let mut tasks = self.tasks.clone();
+        apply_pending_edits(
+            &mut tasks,
+            self.pending_title.as_ref(),
+            self.pending_memo.as_ref(),
+            OffsetDateTime::now_utc(),
+        )?;
+        let history = self
+            .tasks
+            .iter()
+            .zip(&tasks)
+            .filter(|(before, after)| before != after)
+            .map(|(before, after)| (Some(before.clone()), Some(after.clone())))
+            .collect::<Vec<_>>();
+        if !history.is_empty() {
+            self.worker
+                .save_tasks(
+                    history
+                        .iter()
+                        .filter_map(|(_, after)| after.clone())
+                        .collect(),
+                )
+                .map_err(|error| error.to_string())?;
+        }
+        self.tasks = tasks;
+        self.pending_title = None;
+        self.pending_memo = None;
+        self.push_task_history(history);
+        self.error_message = None;
+        self.status_message = "保存済み".to_owned();
+        Ok(())
+    }
+
+    pub(super) fn set_pending_edit_error(&mut self, message: String) {
+        while self.worker.take_error().is_some() {}
+        self.error_message = Some(message);
+        self.status_message = if self.worker.is_read_only() {
+            "読み取り専用".to_owned()
+        } else {
+            "保存失敗".to_owned()
+        };
+    }
+
+    pub(in crate::presentation) fn should_close(&mut self, cx: &mut Context<Self>) -> bool {
+        if self.allow_close || self.close_save_completed {
+            return true;
+        }
+        match self.persist_before_close() {
+            Ok(()) => true,
+            Err(message) => {
+                while self.worker.take_error().is_some() {}
+                self.error_message = Some(format!("終了前の保存に失敗しました: {message}"));
+                self.status_message = "保存失敗 — 終了を保留中".to_owned();
+                self.pending_confirmation = Some(PendingConfirmation::CloseSaveFailed);
+                cx.notify();
+                false
+            }
+        }
+    }
+
+    pub(super) fn persist_before_close(&mut self) -> Result<(), String> {
+        self.persist_pending_edits()?;
+        self.worker.flush().map_err(|error| error.to_string())?;
+        self.update_persisted_settings_fields();
+        self.settings
+            .save(&self.paths.settings)
+            .map_err(|error| error.to_string())?;
+        self.close_save_completed = true;
+        self.status_message = "保存済み".to_owned();
+        Ok(())
+    }
+
+    pub(super) fn update_persisted_settings_fields(&mut self) {
+        self.settings.view_kind = self.view_kind;
+        self.settings.active_view = smart_view_setting(self.active_view);
+        self.settings.sort = self.sort.clone();
+        self.settings.group_by = self.group_by;
+    }
+
+    pub(super) fn retry_close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.pending_confirmation = None;
+        if self.should_close(cx) {
+            self.allow_close = true;
+            window.remove_window();
+        }
+    }
+
+    pub(super) fn discard_unsaved_and_close(&mut self, window: &mut Window) {
+        self.pending_title = None;
+        self.pending_memo = None;
+        self.pending_confirmation = None;
+        self.discard_unsaved_on_close = true;
+        self.allow_close = true;
+        window.remove_window();
+    }
+
+    pub(super) fn sync_management_inputs(
+        &mut self,
+        view: SmartView,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let name = match view {
+            SmartView::Saved(id) => self
+                .saved_views
+                .iter()
+                .find(|view| view.id == id)
+                .map(|view| view.name.clone())
+                .unwrap_or_default(),
+            _ => String::new(),
+        };
+        self.view_name_input.update(cx, |state, cx| {
+            state.set_value(name, window, cx);
+        });
+    }
+
+    pub(super) fn sync_detail_inputs(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.dismiss_due_popover(cx);
+        self.due_input_error = None;
+        let Some(task) = self.selected_task().cloned() else {
+            return;
+        };
+        let picker_date = picker_date_from_due(&task.due);
+        self.title_input.update(cx, |state, cx| {
+            state.set_value(task.title, window, cx);
+        });
+        self.memo_input.update(cx, |state, cx| {
+            state.set_value(task.memo, window, cx);
+        });
+        self.due_input.update(cx, |state, cx| {
+            state.set_value(format_due_input(&task.due), window, cx);
+        });
+        self.due_calendar.update(cx, |state, cx| {
+            state.set_date(picker_date, window, cx);
+        });
+        self.progress_input.update(cx, |state, cx| {
+            state.set_value(task.progress.to_string(), window, cx);
+        });
+    }
+
+    pub(super) fn schedule_title_save(&mut self, title: String, cx: &mut Context<Self>) {
+        let Some(id) = self.selected_task else {
+            return;
+        };
+        if title.trim().is_empty() || title.chars().count() > 500 {
+            self.error_message = Some("タイトルは1〜500文字で入力してください".to_owned());
+            cx.notify();
+            return;
+        }
+        self.title_revision = self.title_revision.wrapping_add(1);
+        let revision = self.title_revision;
+        self.pending_title = Some((id, title));
+        self.status_message = "編集中…".to_owned();
+        cx.spawn(async move |this, cx| {
+            Timer::after(StdDuration::from_millis(400)).await;
+            if let Some(this) = this.upgrade() {
+                this.update(cx, |this, cx| {
+                    if this.title_revision != revision {
+                        return;
+                    }
+                    if this.pending_title.is_none() {
+                        return;
+                    }
+                    if let Err(message) = this.persist_pending_edits() {
+                        this.set_pending_edit_error(message);
+                    }
+                    cx.notify();
+                })
+                .ok();
+            }
+        })
+        .detach();
+        cx.notify();
+    }
+
+    pub(super) fn schedule_memo_save(&mut self, memo: String, cx: &mut Context<Self>) {
+        let Some(id) = self.selected_task else {
+            return;
+        };
+        self.memo_revision = self.memo_revision.wrapping_add(1);
+        let revision = self.memo_revision;
+        self.pending_memo = Some((id, memo));
+        self.status_message = "編集中…".to_owned();
+        cx.spawn(async move |this, cx| {
+            Timer::after(StdDuration::from_millis(400)).await;
+            if let Some(this) = this.upgrade() {
+                this.update(cx, |this, cx| {
+                    if this.memo_revision != revision {
+                        return;
+                    }
+                    if this.pending_memo.is_none() {
+                        return;
+                    }
+                    if let Err(message) = this.persist_pending_edits() {
+                        this.set_pending_edit_error(message);
+                    }
+                    cx.notify();
+                })
+                .ok();
+            }
+        })
+        .detach();
+        cx.notify();
+    }
+
+    pub(super) fn save_selected_task_form(&mut self, cx: &mut Context<Self>) -> bool {
+        let Some(id) = self.selected_task else {
+            return false;
+        };
+        let Some(before) = self.tasks.iter().find(|task| task.id == id).cloned() else {
+            return false;
+        };
+        let mut after = before.clone();
+        if let Err(error) = after.set_title(self.title_input.read(cx).value().to_string()) {
+            self.error_message = Some(error.to_string());
+            cx.notify();
+            return false;
+        }
+        after.memo = self.memo_input.read(cx).value().to_string();
+        after.due = match parse_due(self.due_input.read(cx).value().as_str()) {
+            Ok(due) => {
+                self.due_input_error = None;
+                due
+            }
+            Err(message) => {
+                self.due_input_error = Some(message.clone());
+                self.error_message = Some(message);
+                cx.notify();
+                return false;
+            }
+        };
+        let progress = match self.progress_input.read(cx).value().trim().parse::<u8>() {
+            Ok(progress) if progress <= 100 => progress,
+            _ => {
+                self.error_message = Some("進捗は0〜100の整数で入力してください".to_owned());
+                cx.notify();
+                return false;
+            }
+        };
+        let _ = after.set_progress(progress);
+
+        if after != before {
+            after.touch(OffsetDateTime::now_utc());
+            if let Err(error) = self.worker.save_task(after.clone()) {
+                self.set_error(error);
+                cx.notify();
+                return false;
+            }
+            if let Some(task) = self.tasks.iter_mut().find(|task| task.id == id) {
+                *task = after.clone();
+            }
+            self.push_task_history(vec![(Some(before), Some(after))]);
+        }
+
+        self.title_revision = self.title_revision.wrapping_add(1);
+        self.memo_revision = self.memo_revision.wrapping_add(1);
+        self.pending_title = None;
+        self.pending_memo = None;
+        self.error_message = None;
+        self.status_message = "タスクの変更を保存しました".to_owned();
+        cx.notify();
+        true
+    }
+
+    pub(super) fn save_and_close_selected_task(&mut self, cx: &mut Context<Self>) -> bool {
+        if !self.save_selected_task_form(cx) {
+            return false;
+        }
+        self.selected_task = None;
+        self.new_task_draft = None;
+        cx.notify();
+        true
+    }
+
+    fn render_memo_input(&self) -> AnyElement {
+        div()
+            .debug_selector(|| "task-memo-input".to_owned())
+            .w_full()
+            .h(px(160.0))
+            .flex_shrink_0()
+            .overflow_hidden()
+            .child(Input::new(&self.memo_input).h_full())
+            .into_any_element()
+    }
+}
+
+pub(super) fn apply_pending_edits(
+    tasks: &mut [Task],
+    pending_title: Option<&(TaskId, String)>,
+    pending_memo: Option<&(TaskId, String)>,
+    now: OffsetDateTime,
+) -> Result<bool, String> {
+    let mut changed = false;
+    if let Some((id, title)) = pending_title
+        && let Some(task) = tasks.iter_mut().find(|task| task.id == *id)
+    {
+        task.set_title(title.clone())
+            .map_err(|error| error.to_string())?;
+        task.touch(now);
+        changed = true;
+    }
+    if let Some((id, memo)) = pending_memo
+        && let Some(task) = tasks.iter_mut().find(|task| task.id == *id)
+    {
+        task.memo = memo.clone();
+        task.touch(now);
+        changed = true;
+    }
+    Ok(changed)
 }

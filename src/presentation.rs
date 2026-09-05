@@ -37,7 +37,7 @@ pub fn run() -> anyhow::Result<()> {
     let worker = TaskApplication::start(&paths.database)?;
     if !worker.is_read_only() {
         worker.purge_expired_trash(OffsetDateTime::now_utc())?;
-        workspace::schedule_maintenance(worker.clone(), paths.clone());
+        crate::application::maintenance::schedule_maintenance(worker.clone(), paths.clone());
     }
     let snapshot = worker.load()?;
 

@@ -1,3 +1,6 @@
+mod history;
+pub(crate) use history::HistoryEntry;
+pub(crate) mod maintenance;
 use std::path::{Path, PathBuf};
 
 use time::OffsetDateTime;
@@ -156,27 +159,6 @@ impl TaskApplication {
 
     pub(crate) fn flush(&self) -> Result<(), ApplicationError> {
         self.database.flush().map_err(Into::into)
-    }
-}
-
-/// One reversible application-level operation.
-///
-/// A single entry may span tasks and their related project or tag so that
-/// relationship changes are restored together.
-#[derive(Debug, Clone)]
-pub(crate) struct HistoryEntry {
-    pub(crate) task_changes: Vec<(Option<Task>, Option<Task>)>,
-    pub(crate) project_changes: Vec<(Option<Project>, Option<Project>)>,
-    pub(crate) tag_changes: Vec<(Option<Tag>, Option<Tag>)>,
-}
-
-impl HistoryEntry {
-    pub(crate) fn tasks(changes: Vec<(Option<Task>, Option<Task>)>) -> Self {
-        Self {
-            task_changes: changes,
-            project_changes: Vec::new(),
-            tag_changes: Vec::new(),
-        }
     }
 }
 
