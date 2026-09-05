@@ -5,6 +5,8 @@ use crate::domain::ViewKind;
 
 use super::{Workspace, smart_view_setting};
 
+const SAVE_ERROR_PREFIX: &str = "表示設定の保存に失敗しました: ";
+
 impl Workspace {
     pub(super) fn set_view_kind(&mut self, kind: ViewKind, cx: &mut Context<Self>) {
         self.view_kind = kind;
@@ -14,9 +16,22 @@ impl Workspace {
 
     pub(super) fn persist_view_preferences(&mut self, cx: &mut Context<Self>) {
         self.update_persisted_settings_fields();
-        if let Err(error) = self.settings.save(&self.paths.settings) {
-            self.error_message = Some(format!("表示設定の保存に失敗しました: {error}"));
-            cx.notify();
+        match self.settings.save(&self.paths.settings) {
+            Err(error) => {
+                self.error_message = Some(format!("{SAVE_ERROR_PREFIX}{error}"));
+                cx.notify();
+            }
+            Ok(()) => {
+                // Only dismiss our own recovered error, not an unrelated task error.
+                if self
+                    .error_message
+                    .as_deref()
+                    .is_some_and(|message| message.starts_with(SAVE_ERROR_PREFIX))
+                {
+                    self.error_message = None;
+                    cx.notify();
+                }
+            }
         }
     }
 

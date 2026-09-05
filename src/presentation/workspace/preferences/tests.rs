@@ -117,7 +117,7 @@ fn restart_keeps_last_mode_without_overwriting_saved_view_preset(cx: &mut gpui::
 }
 
 #[gpui::test]
-fn settings_save_failure_is_visible_and_does_not_block_mode_switch(cx: &mut gpui::TestAppContext) {
+fn settings_save_failure_recovers_without_clearing_unrelated_errors(cx: &mut gpui::TestAppContext) {
     let directory = tempfile::tempdir().unwrap();
     let paths = AppPaths::resolve(Some(directory.path())).unwrap();
     let worker = TaskApplication::start(&paths.database).unwrap();
@@ -150,6 +150,21 @@ fn settings_save_failure_is_visible_and_does_not_block_mode_switch(cx: &mut gpui
                     .contains("表示設定の保存に失敗")
             );
             workspace.paths.settings = original_path;
+            workspace.set_view_kind(ViewKind::Calendar, cx);
+            assert!(workspace.error_message.is_none());
+            assert_eq!(
+                AppSettings::load(&workspace.paths.settings).view_kind,
+                ViewKind::Calendar
+            );
+
+            let unrelated_error = "納期の入力形式を確認してください".to_owned();
+            workspace.error_message = Some(unrelated_error.clone());
+            workspace.set_view_kind(ViewKind::List, cx);
+            assert_eq!(workspace.error_message, Some(unrelated_error));
+            assert_eq!(
+                AppSettings::load(&workspace.paths.settings).view_kind,
+                ViewKind::List
+            );
             window.remove_window();
         })
         .unwrap();
