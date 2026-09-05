@@ -267,6 +267,126 @@ fn list_row_reordering_supports_descending_manual_sort_but_not_automatic_sort(
 }
 
 #[gpui::test]
+fn list_rows_pack_from_the_top_with_or_without_group_headings(cx: &mut TestAppContext) {
+    let (_directory, window, _) = workspace(cx);
+    let mut visual = gpui::VisualTestContext::from_window(*window, cx);
+    for group in [None, Some(GroupBy::Status), Some(GroupBy::Priority), None] {
+        window
+            .update(&mut visual, |workspace, _, cx| {
+                workspace.group_by = group;
+                cx.notify();
+            })
+            .unwrap();
+        for (width, height) in [(900., 1600.), (2040., 1640.), (1280., 800.)] {
+            visual.simulate_resize(gpui::size(px(width), px(height)));
+            visual.run_until_parked();
+            let selectors = window
+                .update(&mut visual, |workspace, _, cx| {
+                    let mut selectors = Vec::new();
+                    let mut last_group = None;
+                    for task in workspace.visible_tasks(cx) {
+                        if let Some(group) = group {
+                            let label = workspace.task_group_label(&task, group);
+                            if last_group.as_ref() != Some(&label) {
+                                selectors.push(format!("task-group-{label}"));
+                                last_group = Some(label);
+                            }
+                        }
+                        selectors.push(format!("task-item-{}", task.id));
+                    }
+                    selectors
+                })
+                .unwrap();
+            let bounds = selectors
+                .into_iter()
+                .map(|selector| {
+                    visual
+                        .debug_bounds(selector.leak())
+                        .expect("all four rows and headings should fit")
+                })
+                .collect::<Vec<_>>();
+            for pair in bounds.windows(2) {
+                assert!(
+                    (pair[1].top() - pair[0].bottom()).abs() <= px(0.5),
+                    "no unused vertical space or overlap between items: {pair:?}"
+                );
+                assert_eq!(pair[0].size.width, pair[1].size.width);
+            }
+            assert!(
+                bounds.last().unwrap().bottom() - bounds[0].top() <= px(640.),
+                "four tasks and their headings must remain compact: {bounds:?}"
+            );
+        }
+    }
+    visual.update(|window, _| window.remove_window());
+}
+
+#[gpui::test]
+fn large_list_stays_virtualized_and_keeps_scroll_position_on_refresh(cx: &mut TestAppContext) {
+    let (_directory, window, _) = workspace(cx);
+    let ids = window
+        .update(cx, |workspace, _, cx| {
+            workspace.tasks = (0..10_000)
+                .map(|index| {
+                    let mut task =
+                        Task::new(format!("タスク {index}"), OffsetDateTime::now_utc()).unwrap();
+                    task.sort_order = index;
+                    task
+                })
+                .collect();
+            cx.notify();
+            workspace
+                .tasks
+                .iter()
+                .map(|task| task.id)
+                .collect::<Vec<_>>()
+        })
+        .unwrap();
+    let mut visual = gpui::VisualTestContext::from_window(*window, cx);
+    visual.simulate_resize(gpui::size(px(1280.), px(800.)));
+    visual.run_until_parked();
+    assert!(
+        visual
+            .debug_bounds(format!("task-item-{}", ids[0]).leak())
+            .is_some()
+    );
+    assert!(
+        visual
+            .debug_bounds(format!("task-item-{}", ids[9999]).leak())
+            .is_none()
+    );
+    window
+        .update(&mut visual, |workspace, _, cx| {
+            workspace.task_list_state.scroll_to(gpui::ListOffset {
+                item_ix: 100,
+                offset_in_item: px(0.),
+            });
+            cx.notify();
+        })
+        .unwrap();
+    visual.run_until_parked();
+    let selector = format!("task-item-{}", ids[100]).leak();
+    let before = visual.debug_bounds(selector).unwrap();
+    window.update(&mut visual, |_, _, cx| cx.notify()).unwrap();
+    visual.run_until_parked();
+    assert_eq!(visual.debug_bounds(selector).unwrap(), before);
+    window
+        .update(&mut visual, |workspace, _, cx| {
+            // Removing/filtering to fewer rows must clamp a stale scroll offset.
+            workspace.tasks.truncate(2);
+            cx.notify();
+        })
+        .unwrap();
+    visual.run_until_parked();
+    assert!(
+        visual
+            .debug_bounds(format!("task-item-{}", ids[0]).leak())
+            .is_some()
+    );
+    visual.update(|window, _| window.remove_window());
+}
+
+#[gpui::test]
 fn list_metadata_and_actions_fit_with_editor_at_minimum_window_width(cx: &mut TestAppContext) {
     let (_directory, window, [a, b, _, _]) = workspace(cx);
     window
@@ -300,17 +420,18 @@ fn list_metadata_and_actions_fit_with_editor_at_minimum_window_width(cx: &mut Te
                 "wide rows must remain compact: {dated:?}"
             );
         }
-        assert_eq!(
-            undated.size, dated.size,
-            "virtualized rows must have equal dimensions"
-        );
+        assert_eq!(undated.size.width, dated.size.width);
         assert!(
             dated.bottom() <= undated.top(),
             "task rows must not overlap"
         );
+        assert!(
+            (undated.top() - dated.bottom() - px(8.)).abs() <= px(0.5),
+            "rows need only an 8px gap: {dated:?}, {undated:?}"
+        );
         for (id, row) in [(a, undated), (b, dated)] {
             assert!(row.right() <= editor.left());
-            for part in ["info", "due", "delete"] {
+            for part in ["info", "title", "status", "priority", "due", "delete"] {
                 let selector = format!("task-{part}-{id}").leak();
                 let bounds = visual.debug_bounds(selector).unwrap();
                 assert!(

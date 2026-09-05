@@ -19,7 +19,7 @@ use super::theme;
 use super::due::{due_date, format_due_display};
 use super::task_query::prioritize_list_tasks;
 use super::{SmartView, TaskDrag, Workspace, priority_color};
-use gpui::uniform_list;
+use gpui::list;
 #[cfg(test)]
 mod tests;
 
@@ -72,12 +72,20 @@ impl Workspace {
     }
 
     fn render_list_task(&self, tasks: &[Task], index: usize, cx: &mut Context<Self>) -> AnyElement {
-        self.render_task_row(
-            tasks[index].clone(),
-            self.list_move_target(tasks, index, -1).is_some(),
-            self.list_move_target(tasks, index, 1).is_some(),
-            cx,
-        )
+        div()
+            .debug_selector({
+                let id = tasks[index].id;
+                move || format!("task-item-{id}")
+            })
+            .w_full()
+            .pb_2()
+            .child(self.render_task_row(
+                tasks[index].clone(),
+                self.list_move_target(tasks, index, -1).is_some(),
+                self.list_move_target(tasks, index, 1).is_some(),
+                cx,
+            ))
+            .into_any_element()
     }
 
     /// Order the shared sequence before rendering or handling list interactions.
@@ -106,44 +114,6 @@ impl Workspace {
             )
             .child(format!("{count} 件"));
 
-        if self.group_by.is_none() {
-            let tasks = std::sync::Arc::new(tasks);
-            return div()
-                .flex()
-                .flex_col()
-                .flex_1()
-                .h_full()
-                .min_h_0()
-                .child(header)
-                .when(count == 0, |container| {
-                    container.child(
-                        div()
-                            .p_8()
-                            .text_color(theme::MUTED)
-                            .child("該当するタスクはありません"),
-                    )
-                })
-                .when(count > 0, |container| {
-                    container.child(
-                        uniform_list(
-                            "task-list",
-                            count,
-                            cx.processor(
-                                move |this, range: std::ops::Range<usize>, _window, cx| {
-                                    range
-                                        .map(|index| this.render_list_task(&tasks, index, cx))
-                                        .collect::<Vec<_>>()
-                                },
-                            ),
-                        )
-                        .flex_1()
-                        .px_4()
-                        .pb_4(),
-                    )
-                })
-                .into_any_element();
-        }
-
         let mut items = Vec::new();
         let mut current_group = None::<String>;
         for (index, task) in tasks.iter().enumerate() {
@@ -156,9 +126,14 @@ impl Workspace {
             }
             items.push(VirtualListItem::Task(index));
         }
-        let item_count = items.len();
-        let items = std::sync::Arc::new(items);
-        let tasks = std::sync::Arc::new(tasks);
+        // Rows wrap at the actual pane width, and group headings have a different
+        // height. uniform_list measures at MinContent width, so it cannot be used
+        // here. Invalidate content on render without losing scroll position;
+        // list still measures/renders only visible rows (plus a small overdraw).
+        let scroll_top = self.task_list_state.logical_scroll_top();
+        self.task_list_state
+            .splice(0..self.task_list_state.item_count(), items.len());
+        self.task_list_state.scroll_to(scroll_top);
         div()
             .flex()
             .flex_col()
@@ -176,28 +151,39 @@ impl Workspace {
             })
             .when(count > 0, |container| {
                 container.child(
-                    uniform_list(
-                        "grouped-task-list",
-                        item_count,
-                        cx.processor(move |this, range: std::ops::Range<usize>, _window, cx| {
-                            range
-                                .map(|index| match items[index].clone() {
-                                    VirtualListItem::Group(label) => div()
-                                        .mt_3()
-                                        .text_color(theme::MUTED)
-                                        .font_weight(FontWeight::BOLD)
-                                        .child(label)
-                                        .into_any_element(),
-                                    VirtualListItem::Task(index) => {
-                                        this.render_list_task(&tasks, index, cx)
+                    div()
+                        .flex()
+                        .flex_col()
+                        .flex_1()
+                        .min_h_0()
+                        .px_4()
+                        .pb_4()
+                        .child(
+                            list(
+                                self.task_list_state.clone(),
+                                cx.processor(move |this, index: usize, _window, cx| {
+                                    match items[index].clone() {
+                                        VirtualListItem::Group(label) => div()
+                                            .debug_selector({
+                                                let label = label.clone();
+                                                move || format!("task-group-{label}")
+                                            })
+                                            .w_full()
+                                            .pt_2()
+                                            .pb_2()
+                                            .text_color(theme::MUTED)
+                                            .font_weight(FontWeight::BOLD)
+                                            .child(label)
+                                            .into_any_element(),
+                                        VirtualListItem::Task(index) => {
+                                            this.render_list_task(&tasks, index, cx)
+                                        }
                                     }
-                                })
-                                .collect::<Vec<_>>()
-                        }),
-                    )
-                    .flex_1()
-                    .px_4()
-                    .pb_4(),
+                                }),
+                            )
+                            .flex_1()
+                            .min_h_0(),
+                        ),
                 )
             })
             .into_any_element()
@@ -268,8 +254,9 @@ impl Workspace {
             .flex_col()
             .w_full()
             .min_w_0()
-            .gap_3()
-            .p_3()
+            .gap_2()
+            .px_3()
+            .py_2()
             .rounded_lg()
             .border_1()
             .border_color(if selected {
@@ -307,7 +294,9 @@ impl Workspace {
             )
             .child(
                 div()
+                    .debug_selector(move || format!("task-summary-{task_id}"))
                     .flex()
+                    .flex_shrink_0()
                     .w_full()
                     .min_w_0()
                     .items_center()
@@ -347,7 +336,9 @@ impl Workspace {
                             .min_w_0()
                             .child(
                                 div()
-                                    .text_ellipsis()
+                                    .debug_selector(move || format!("task-title-{task_id}"))
+                                    .w_full()
+                                    .truncate()
                                     .text_color(if task.status == TaskStatus::Done {
                                         theme::MUTED
                                     } else {
@@ -362,50 +353,59 @@ impl Workspace {
                             .child(
                                 div()
                                     .flex()
-                                    .min_w_0()
-                                    .items_center()
-                                    .gap_3()
-                                    .text_size(px(12.0))
-                                    .text_color(theme::MUTED)
-                                    .child(div().flex_1().min_w_0().text_ellipsis().child(
-                                        if task.status == TaskStatus::Blocked {
-                                            "⏸ 保留"
-                                        } else {
-                                            task.status.label()
-                                        },
-                                    ))
-                                    .child(
-                                        div()
-                                            .flex_1()
-                                            .min_w_0()
-                                            .text_ellipsis()
-                                            .text_color(priority_color)
-                                            .child(format!("優先度 {}", task.priority.label())),
-                                    ),
-                            )
-                            .child(
-                                div()
-                                    .debug_selector(move || format!("task-due-{task_id}"))
+                                    .flex_wrap()
                                     .w_full()
                                     .min_w_0()
-                                    .max_w(px(176.0))
-                                    .text_ellipsis()
+                                    .items_center()
+                                    .gap_x_3()
+                                    .gap_y_1()
                                     .text_size(px(12.0))
-                                    .text_color(due_color)
-                                    .child(if due.is_empty() {
-                                        "納期なし".to_owned()
-                                    } else {
-                                        due
-                                    }),
+                                    .text_color(theme::MUTED)
+                                    .child(
+                                        div()
+                                            .debug_selector(move || {
+                                                format!("task-status-{task_id}")
+                                            })
+                                            .flex_shrink_0()
+                                            .whitespace_nowrap()
+                                            .child(if task.status == TaskStatus::Blocked {
+                                                "⏸ 保留"
+                                            } else {
+                                                task.status.label()
+                                            }),
+                                    )
+                                    .child(
+                                        div()
+                                            .debug_selector(move || {
+                                                format!("task-priority-{task_id}")
+                                            })
+                                            .flex_shrink_0()
+                                            .whitespace_nowrap()
+                                            .text_color(priority_color)
+                                            .child(format!("優先度 {}", task.priority.label())),
+                                    )
+                                    .child(
+                                        div()
+                                            .debug_selector(move || format!("task-due-{task_id}"))
+                                            .w(px(176.0))
+                                            .min_w(px(72.0))
+                                            .text_color(due_color)
+                                            .child(if due.is_empty() {
+                                                "納期なし".to_owned()
+                                            } else {
+                                                due
+                                            }),
+                                    ),
                             )
                             .child(Progress::new().value(f32::from(task.progress))),
                     ),
             )
-            // Every row uses the same single-line metadata and wrapping action layout,
-            // keeping uniform_list item heights independent of title and due contents.
+            // Actions wrap in narrow panes; the list measures the actual row height.
             .child(
                 div()
+                    .debug_selector(move || format!("task-actions-{task_id}"))
                     .flex()
+                    .flex_shrink_0()
                     .flex_wrap()
                     .w_full()
                     .min_w_0()

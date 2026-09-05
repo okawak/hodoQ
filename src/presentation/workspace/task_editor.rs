@@ -18,9 +18,7 @@ use crate::domain::{Priority, Task, TaskId, TaskStatus};
 use super::theme;
 
 use super::due::{format_due_input, parse_due, picker_date_from_due};
-use super::{
-    PendingConfirmation, SmartView, Workspace, labeled_input, section_label, smart_view_setting,
-};
+use super::{PendingConfirmation, SmartView, Workspace, labeled_input, section_label};
 // The scroll viewport owns a non-shrinking form so short windows cannot compress controls.
 impl Workspace {
     fn render_new_task_detail(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
@@ -449,13 +447,6 @@ impl Workspace {
         self.close_save_completed = true;
         self.status_message = "保存済み".to_owned();
         Ok(())
-    }
-
-    pub(super) fn update_persisted_settings_fields(&mut self) {
-        self.settings.view_kind = self.view_kind;
-        self.settings.active_view = smart_view_setting(self.active_view);
-        self.settings.sort = self.sort.clone();
-        self.settings.group_by = self.group_by;
     }
 
     pub(super) fn retry_close(&mut self, window: &mut Window, cx: &mut Context<Self>) {

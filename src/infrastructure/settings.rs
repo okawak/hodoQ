@@ -118,6 +118,15 @@ mod tests {
     use super::*;
 
     #[test]
+    fn absent_view_preference_defaults_to_list() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        assert_eq!(AppSettings::load(&path).view_kind, ViewKind::List);
+        fs::write(&path, r#"{"active_view":"all"}"#).unwrap();
+        assert_eq!(AppSettings::load(&path).view_kind, ViewKind::List);
+    }
+
+    #[test]
     fn corrupt_settings_fall_back_to_defaults() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("settings.json");
