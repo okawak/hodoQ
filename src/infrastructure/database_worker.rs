@@ -15,14 +15,7 @@ use crate::domain::{
 };
 
 use super::{RepositoryError, SqliteRepository};
-
-#[derive(Debug, Clone)]
-pub struct AppDataSnapshot {
-    pub tasks: Vec<Task>,
-    pub projects: Vec<Project>,
-    pub tags: Vec<Tag>,
-    pub saved_views: Vec<SavedView>,
-}
+use crate::domain::AppDataSnapshot;
 
 enum DatabaseCommand {
     Load(Sender<Result<AppDataSnapshot, String>>),

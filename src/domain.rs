@@ -12,3 +12,12 @@ pub use tag::{Tag, TagId};
 pub use task::{Due, Priority, Task, TaskError, TaskId, TaskStatus};
 
 pub(crate) mod task_query;
+
+/// Persisted entities loaded together for one workspace.
+#[derive(Debug, Clone)]
+pub struct AppDataSnapshot {
+    pub tasks: Vec<Task>,
+    pub projects: Vec<Project>,
+    pub tags: Vec<Tag>,
+    pub saved_views: Vec<SavedView>,
+}

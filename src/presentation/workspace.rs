@@ -21,13 +21,13 @@ use gpui_component::{
 use time::{Date, OffsetDateTime, UtcOffset, macros::format_description};
 
 use crate::{
-    application::{HistoryEntry, TaskApplication},
+    application::{AppDataSnapshot, ApplicationError, HistoryEntry, TaskApplication},
     domain::{
         Due, DueScope, GroupBy, Priority, Project, ProjectId, SavedBaseView, SavedView,
         SavedViewId, SortDirection, SortField, SortSpec, Tag, TagId, Task, TaskFilter, TaskId,
         TaskStatus, ViewKind,
     },
-    infrastructure::{AppDataSnapshot, AppPaths, AppSettings, InstanceLock, RepositoryError},
+    infrastructure::{AppPaths, AppSettings, InstanceLock},
 };
 
 use super::theme;
@@ -632,7 +632,7 @@ impl Workspace {
         &self,
         history: &HistoryEntry,
         use_after: bool,
-    ) -> Result<(), RepositoryError> {
+    ) -> Result<(), ApplicationError> {
         let (projects_to_save, projects_to_delete) = history.project_changes.iter().fold(
             (Vec::new(), Vec::new()),
             |mut changes, (before, after)| {
@@ -1862,7 +1862,7 @@ impl Workspace {
         cx.notify();
     }
 
-    fn set_error(&mut self, error: RepositoryError) {
+    fn set_error(&mut self, error: ApplicationError) {
         while self.worker.take_error().is_some() {}
         self.error_message = Some(error.to_string());
         self.status_message = if self.worker.is_read_only() {
@@ -2300,13 +2300,7 @@ impl Workspace {
     }
 
     fn retry_database(&mut self, cx: &mut Context<Self>) {
-        match TaskApplication::start(&self.paths.database).and_then(|worker| {
-            let snapshot = worker.load()?;
-            if worker.is_read_only() {
-                return Err(RepositoryError::ReadOnly);
-            }
-            Ok((worker, snapshot))
-        }) {
+        match TaskApplication::reconnect(&self.paths.database) {
             Ok((worker, snapshot)) => {
                 self.worker = worker;
                 self.tasks = snapshot.tasks;
@@ -4228,7 +4222,7 @@ impl Drop for Workspace {
 pub(super) fn schedule_daily_backup(
     worker: &TaskApplication,
     paths: &AppPaths,
-) -> Result<(), RepositoryError> {
+) -> Result<(), ApplicationError> {
     let offset = UtcOffset::current_local_offset().unwrap_or(UtcOffset::UTC);
     let today = OffsetDateTime::now_utc().to_offset(offset).date();
     let destination = paths.backups.join(format!("hodoq-{today}.sqlite3"));
