@@ -187,3 +187,79 @@ fn duplicate_saves_source_draft_and_initializes_copy_editor(cx: &mut TestAppCont
         })
         .unwrap();
 }
+
+#[gpui::test]
+fn duplicate_keeps_open_new_task_draft(cx: &mut TestAppContext) {
+    let (_directory, window, [a, _]) = workspace(cx);
+    window
+        .update(cx, |workspace, window, cx| {
+            workspace.open_new_task_form(window, cx);
+            workspace.title_input.update(cx, |input, cx| {
+                input.set_value("unfinished new task", window, cx)
+            });
+            workspace
+                .memo_input
+                .update(cx, |input, cx| input.set_value("new memo", window, cx));
+            workspace.duplicate_task(a, window, cx);
+            assert!(workspace.new_task_draft.is_some());
+            assert!(workspace.selected_task.is_none());
+            assert_eq!(
+                workspace.title_input.read(cx).value().as_str(),
+                "unfinished new task"
+            );
+            assert_eq!(workspace.memo_input.read(cx).value().as_str(), "new memo");
+            assert_eq!(workspace.worker.load().unwrap().tasks.len(), 3);
+            assert!(workspace.create_task(cx));
+            assert!(
+                workspace
+                    .worker
+                    .load()
+                    .unwrap()
+                    .tasks
+                    .iter()
+                    .any(|task| task.title == "unfinished new task" && task.memo == "new memo")
+            );
+            window.remove_window();
+        })
+        .unwrap();
+}
+
+#[gpui::test]
+fn trash_keeps_invalid_title_editable_until_it_is_corrected(cx: &mut TestAppContext) {
+    let (_directory, window, [a, _]) = workspace(cx);
+    window
+        .update(cx, |workspace, window, cx| {
+            workspace.select_task(a, window, cx);
+            workspace
+                .title_input
+                .update(cx, |input, cx| input.set_value("", window, cx));
+            workspace.schedule_title_save("".into(), cx);
+            workspace.move_to_trash(a, cx);
+            assert_eq!(workspace.selected_task, Some(a));
+            assert!(workspace.selected_task().unwrap().deleted_at.is_none());
+            assert!(
+                workspace
+                    .worker
+                    .load()
+                    .unwrap()
+                    .tasks
+                    .iter()
+                    .find(|task| task.id == a)
+                    .unwrap()
+                    .deleted_at
+                    .is_none()
+            );
+            assert_eq!(workspace.pending_title, Some((a, String::new())));
+            workspace.schedule_title_save("corrected".into(), cx);
+            workspace.move_to_trash(a, cx);
+            assert!(workspace.selected_task.is_none());
+            assert!(workspace.pending_title.is_none());
+            let snapshot = workspace.worker.load().unwrap();
+            let task = snapshot.tasks.iter().find(|task| task.id == a).unwrap();
+            assert_eq!(task.title, "corrected");
+            assert!(task.deleted_at.is_some());
+            assert!(workspace.should_close(cx));
+            window.remove_window();
+        })
+        .unwrap();
+}

@@ -192,7 +192,9 @@ impl Workspace {
         self.push_task_history(vec![(None, Some(copy.clone()))]);
         let copy_id = copy.id;
         self.tasks.push(copy);
-        self.select_task(copy_id, window, cx);
+        if self.new_task_draft.is_none() {
+            self.select_task(copy_id, window, cx);
+        }
         self.status_message = "タスクを複製しました".to_owned();
         cx.notify();
     }
@@ -413,6 +415,9 @@ impl Workspace {
     }
 
     pub(super) fn move_to_trash(&mut self, id: TaskId, cx: &mut Context<Self>) {
+        if self.selected_task == Some(id) && !self.flush_pending_edits(cx) {
+            return;
+        }
         let now = OffsetDateTime::now_utc();
         let mut history = None;
         if let Some(task) = self.tasks.iter_mut().find(|task| task.id == id) {
