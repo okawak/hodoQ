@@ -2,10 +2,16 @@ name: CI
 
 on:
   push:
+    branches: [main]
   pull_request:
 
 permissions:
   contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  # Keep main runs alive so they can populate the cache shared by future PRs.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   test:
@@ -14,6 +20,10 @@ jobs:
       matrix:
         os: [windows-latest, macos-26]
     runs-on: ${{ matrix.os }}
+    env:
+      CARGO_INCREMENTAL: "0"
+      # Keep backtrace line numbers without caching full type/variable debug info.
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@master
@@ -26,11 +36,32 @@ jobs:
         run: test "$(uname -m)" = "arm64"
       - name: Format
         run: cargo fmt --check
+      - name: Keep only the active Rust toolchain
+        shell: bash
+        # rust-cache hashes every installed toolchain, including unused runner defaults.
+        run: |
+          active_toolchain="$(rustup show active-toolchain | cut -d ' ' -f 1)"
+          active_toolchain="${active_toolchain%$'\r'}"
+          test -n "$active_toolchain"
+          rustup run "$active_toolchain" rustc --version
+          installed_toolchains="$(rustup toolchain list --quiet)"
+          while IFS= read -r toolchain; do
+            toolchain="${toolchain%$'\r'}"
+            if [[ -n "$toolchain" && "$toolchain" != "$active_toolchain" ]]; then
+              rustup toolchain uninstall "$toolchain"
+            fi
+          done <<< "$installed_toolchains"
+      - name: Rust cache
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          # Also separate runner images; rust-cache keys on rustc, host, flags and Cargo.lock.
+          key: ${{ matrix.os }}
+          cache-bin: "false"
       - name: Clippy
-        run: cargo clippy --all-targets --all-features -- -D warnings
+        run: cargo clippy --locked --all-targets --all-features -- -D warnings
       - name: Tests
-        run: cargo test --all-targets --all-features
+        run: cargo test --locked --all-targets --all-features
       - name: Performance tests (release, serial)
-        run: cargo test --release --lib --all-features performance_ -- --ignored --test-threads=1 --nocapture
+        run: cargo test --locked --release --lib --all-features performance_ -- --ignored --test-threads=1 --nocapture
       - name: Release build
-        run: cargo build --release
+        run: cargo build --locked --release
