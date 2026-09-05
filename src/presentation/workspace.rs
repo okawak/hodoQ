@@ -3343,8 +3343,9 @@ impl Workspace {
             .id(SharedString::from(format!("task-{task_id}")))
             .debug_selector(move || row_debug_selector.to_owned())
             .flex()
+            .flex_col()
             .w_full()
-            .items_center()
+            .min_w_0()
             .gap_3()
             .p_3()
             .rounded_lg()
@@ -3383,163 +3384,201 @@ impl Workspace {
                 }),
             )
             .child(
-                Checkbox::new(SharedString::from(format!("complete-{task_id}")))
-                    .checked(if selection_mode {
-                        multi_selected
-                    } else {
-                        task.status == TaskStatus::Done
-                    })
-                    .on_click(move |checked, _, cx| {
-                        checkbox_entity.update(cx, |this, cx| {
-                            if selection_mode {
-                                this.toggle_task_selection(task_id, *checked, cx);
-                            } else {
-                                this.set_task_status(
-                                    task_id,
-                                    if *checked {
-                                        TaskStatus::Done
-                                    } else {
-                                        TaskStatus::Todo
-                                    },
-                                    cx,
-                                );
-                            }
-                        });
-                    }),
-            )
-            .child(
                 div()
                     .flex()
-                    .flex_col()
-                    .gap_1()
-                    .flex_1()
+                    .w_full()
+                    .min_w_0()
+                    .items_center()
+                    .gap_3()
                     .child(
-                        div()
-                            .text_color(if task.status == TaskStatus::Done {
-                                theme::MUTED
+                        Checkbox::new(SharedString::from(format!("complete-{task_id}")))
+                            .checked(if selection_mode {
+                                multi_selected
                             } else {
-                                theme::TEXT
+                                task.status == TaskStatus::Done
                             })
-                            .font_weight(FontWeight::MEDIUM)
-                            .when(task.status == TaskStatus::Done, |title| {
-                                title.line_through()
-                            })
-                            .child(task.title),
+                            .on_click(move |checked, _, cx| {
+                                checkbox_entity.update(cx, |this, cx| {
+                                    if selection_mode {
+                                        this.toggle_task_selection(task_id, *checked, cx);
+                                    } else {
+                                        this.set_task_status(
+                                            task_id,
+                                            if *checked {
+                                                TaskStatus::Done
+                                            } else {
+                                                TaskStatus::Todo
+                                            },
+                                            cx,
+                                        );
+                                    }
+                                });
+                            }),
                     )
                     .child(
                         div()
+                            .debug_selector(move || format!("task-info-{task_id}"))
                             .flex()
-                            .items_center()
-                            .gap_3()
-                            .text_size(px(12.0))
-                            .text_color(theme::MUTED)
-                            .child(if task.status == TaskStatus::Blocked {
-                                "⏸ 保留"
-                            } else {
-                                task.status.label()
-                            })
+                            .flex_col()
+                            .gap_1()
+                            .flex_1()
+                            .min_w_0()
                             .child(
                                 div()
-                                    .text_color(priority_color)
-                                    .child(format!("優先度 {}", task.priority.label())),
+                                    .text_ellipsis()
+                                    .text_color(if task.status == TaskStatus::Done {
+                                        theme::MUTED
+                                    } else {
+                                        theme::TEXT
+                                    })
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .when(task.status == TaskStatus::Done, |title| {
+                                        title.line_through()
+                                    })
+                                    .child(task.title),
                             )
                             .child(
                                 div()
-                                    .w(px(176.0))
-                                    .flex_shrink_0()
+                                    .flex()
+                                    .min_w_0()
+                                    .items_center()
+                                    .gap_3()
+                                    .text_size(px(12.0))
+                                    .text_color(theme::MUTED)
+                                    .child(div().flex_1().min_w_0().text_ellipsis().child(
+                                        if task.status == TaskStatus::Blocked {
+                                            "⏸ 保留"
+                                        } else {
+                                            task.status.label()
+                                        },
+                                    ))
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .min_w_0()
+                                            .text_ellipsis()
+                                            .text_color(priority_color)
+                                            .child(format!("優先度 {}", task.priority.label())),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .debug_selector(move || format!("task-due-{task_id}"))
+                                    .w_full()
+                                    .min_w_0()
+                                    .max_w(px(176.0))
+                                    .text_ellipsis()
+                                    .text_size(px(12.0))
                                     .text_color(due_color)
                                     .child(if due.is_empty() {
                                         "納期なし".to_owned()
                                     } else {
                                         due
                                     }),
-                            ),
-                    )
-                    .child(Progress::new().value(f32::from(task.progress))),
+                            )
+                            .child(Progress::new().value(f32::from(task.progress))),
+                    ),
             )
-            .child(format!("{}%", task.progress))
-            .child({
-                let entity = cx.entity();
-                Button::new(SharedString::from(format!("move-up-{task_id}")))
-                    .ghost()
-                    .small()
-                    .label("↑")
-                    .disabled(!can_move_up)
-                    .on_click(move |_, _, cx| {
-                        entity.update(cx, |this, cx| this.move_task_order(task_id, -1, cx));
-                    })
-            })
-            .child({
-                let entity = cx.entity();
-                Button::new(SharedString::from(format!("move-down-{task_id}")))
-                    .ghost()
-                    .small()
-                    .label("↓")
-                    .disabled(!can_move_down)
-                    .on_click(move |_, _, cx| {
-                        entity.update(cx, |this, cx| this.move_task_order(task_id, 1, cx));
-                    })
-            })
-            .child({
-                let entity = cx.entity();
-                Button::new(SharedString::from(format!("duplicate-{task_id}")))
-                    .ghost()
-                    .small()
-                    .label("複製")
-                    .on_click(move |_, _, cx| {
-                        entity.update(cx, |this, cx| this.duplicate_task(task_id, cx));
-                    })
-            })
-            .when(
-                !matches!(self.active_view, SmartView::Trash | SmartView::Archived),
-                |row| {
-                    let entity = cx.entity();
-                    row.child(
-                        Button::new(SharedString::from(format!("archive-{task_id}")))
+            // Every row uses the same single-line metadata and wrapping action layout,
+            // keeping uniform_list item heights independent of title and due contents.
+            .child(
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .w_full()
+                    .min_w_0()
+                    .items_center()
+                    .gap_2()
+                    .child(
+                        div()
+                            .w(px(44.0))
+                            .flex_shrink_0()
+                            .child(format!("{}%", task.progress)),
+                    )
+                    .child({
+                        let entity = cx.entity();
+                        Button::new(SharedString::from(format!("move-up-{task_id}")))
                             .ghost()
                             .small()
-                            .label("保管")
+                            .label("↑")
+                            .disabled(!can_move_up)
                             .on_click(move |_, _, cx| {
-                                entity.update(cx, |this, cx| {
-                                    this.set_task_status(task_id, TaskStatus::Archived, cx);
+                                entity.update(cx, |this, cx| this.move_task_order(task_id, -1, cx));
+                            })
+                    })
+                    .child({
+                        let entity = cx.entity();
+                        Button::new(SharedString::from(format!("move-down-{task_id}")))
+                            .ghost()
+                            .small()
+                            .label("↓")
+                            .disabled(!can_move_down)
+                            .on_click(move |_, _, cx| {
+                                entity.update(cx, |this, cx| this.move_task_order(task_id, 1, cx));
+                            })
+                    })
+                    .child({
+                        let entity = cx.entity();
+                        Button::new(SharedString::from(format!("duplicate-{task_id}")))
+                            .ghost()
+                            .small()
+                            .label("複製")
+                            .on_click(move |_, _, cx| {
+                                entity.update(cx, |this, cx| this.duplicate_task(task_id, cx));
+                            })
+                    })
+                    .when(
+                        !matches!(self.active_view, SmartView::Trash | SmartView::Archived),
+                        |row| {
+                            let entity = cx.entity();
+                            row.child(
+                                Button::new(SharedString::from(format!("archive-{task_id}")))
+                                    .ghost()
+                                    .small()
+                                    .label("保管")
+                                    .on_click(move |_, _, cx| {
+                                        entity.update(cx, |this, cx| {
+                                            this.set_task_status(task_id, TaskStatus::Archived, cx);
+                                        });
+                                    }),
+                            )
+                        },
+                    )
+                    .when(self.active_view == SmartView::Archived, |row| {
+                        let entity = cx.entity();
+                        row.child(
+                            Button::new(SharedString::from(format!("unarchive-{task_id}")))
+                                .ghost()
+                                .small()
+                                .label("未着手へ")
+                                .on_click(move |_, _, cx| {
+                                    entity.update(cx, |this, cx| {
+                                        this.set_task_status(task_id, TaskStatus::Todo, cx);
+                                    });
+                                }),
+                        )
+                    })
+                    .child(
+                        Button::new(SharedString::from(format!("delete-{task_id}")))
+                            .debug_selector(move || format!("task-delete-{task_id}"))
+                            .ghost()
+                            .danger()
+                            .small()
+                            .label(if self.active_view == SmartView::Trash {
+                                "復元"
+                            } else {
+                                "削除"
+                            })
+                            .on_click(move |_, _, cx| {
+                                row_entity.update(cx, |this, cx| {
+                                    if this.active_view == SmartView::Trash {
+                                        this.restore_task(task_id, cx);
+                                    } else {
+                                        this.move_to_trash(task_id, cx);
+                                    }
                                 });
                             }),
-                    )
-                },
-            )
-            .when(self.active_view == SmartView::Archived, |row| {
-                let entity = cx.entity();
-                row.child(
-                    Button::new(SharedString::from(format!("unarchive-{task_id}")))
-                        .ghost()
-                        .small()
-                        .label("未着手へ")
-                        .on_click(move |_, _, cx| {
-                            entity.update(cx, |this, cx| {
-                                this.set_task_status(task_id, TaskStatus::Todo, cx);
-                            });
-                        }),
-                )
-            })
-            .child(
-                Button::new(SharedString::from(format!("delete-{task_id}")))
-                    .ghost()
-                    .danger()
-                    .small()
-                    .label(if self.active_view == SmartView::Trash {
-                        "復元"
-                    } else {
-                        "削除"
-                    })
-                    .on_click(move |_, _, cx| {
-                        row_entity.update(cx, |this, cx| {
-                            if this.active_view == SmartView::Trash {
-                                this.restore_task(task_id, cx);
-                            } else {
-                                this.move_to_trash(task_id, cx);
-                            }
-                        });
-                    }),
+                    ),
             )
             .context_menu(move |menu, _, _| {
                 let edit_entity = context_entity.clone();

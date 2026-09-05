@@ -265,3 +265,64 @@ fn list_row_reordering_supports_descending_manual_sort_but_not_automatic_sort(
         })
         .unwrap();
 }
+
+#[gpui::test]
+fn list_metadata_and_actions_fit_with_editor_at_minimum_window_width(cx: &mut TestAppContext) {
+    let (_directory, window, [a, b, _, _]) = workspace(cx);
+    window
+        .update(cx, |workspace, window, cx| {
+            workspace.tasks.retain(|task| task.id == a || task.id == b);
+            for task in &mut workspace.tasks {
+                if task.id == a {
+                    task.title = "とても長いタスク名".repeat(20);
+                } else {
+                    task.due = super::super::parse_due("2026-09-08 14:37").unwrap();
+                    task.progress = 100;
+                }
+            }
+            workspace.select_task(a, window, cx);
+        })
+        .unwrap();
+    let mut visual = gpui::VisualTestContext::from_window(*window, cx);
+    for width in [900., 1100., 1600., 900.] {
+        visual.simulate_resize(gpui::size(px(width), px(1200.)));
+        visual.run_until_parked();
+        let undated = visual.debug_bounds("task-row-undated").unwrap();
+        let dated = visual.debug_bounds("task-row-dated").unwrap();
+        let editor = visual.debug_bounds("task-detail-slot").unwrap();
+        assert!(
+            dated.size.height <= px(220.),
+            "row must remain compact: {dated:?}"
+        );
+        if width >= 1600. {
+            assert!(
+                dated.size.height <= px(160.),
+                "wide rows must remain compact: {dated:?}"
+            );
+        }
+        assert_eq!(
+            undated.size, dated.size,
+            "virtualized rows must have equal dimensions"
+        );
+        assert!(
+            dated.bottom() <= undated.top(),
+            "task rows must not overlap"
+        );
+        for (id, row) in [(a, undated), (b, dated)] {
+            assert!(row.right() <= editor.left());
+            for part in ["info", "due", "delete"] {
+                let selector = format!("task-{part}-{id}").leak();
+                let bounds = visual.debug_bounds(selector).unwrap();
+                assert!(
+                    bounds.left() >= row.left() && bounds.right() <= row.right(),
+                    "{part} must fit row at {width}px: {bounds:?}, row={row:?}"
+                );
+                assert!(
+                    bounds.top() >= row.top() && bounds.bottom() <= row.bottom(),
+                    "{part} must fit row height at {width}px: {bounds:?}, row={row:?}"
+                );
+            }
+        }
+    }
+    visual.update(|window, _| window.remove_window());
+}
