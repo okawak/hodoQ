@@ -10,14 +10,13 @@ use gpui_component::{
     Disableable as _, Selectable as _, Sizable as _,
     button::{Button, ButtonVariants as _},
     calendar::Date as PickerDate,
+    calendar::{CalendarEvent, CalendarState},
     checkbox::Checkbox,
-    date_picker::{DatePicker, DatePickerEvent, DatePickerState},
     input::{Input, InputEvent, InputState},
     menu::{ContextMenuExt as _, PopupMenuItem},
     progress::Progress,
     resizable::{ResizableState, h_resizable, resizable_panel},
     scroll::ScrollableElement as _,
-    select::{Select, SelectEvent, SelectState},
 };
 use time::{Date, OffsetDateTime, UtcOffset, macros::format_description};
 
@@ -34,6 +33,7 @@ use crate::{
 use super::theme;
 
 mod due;
+mod due_control;
 mod task_editor;
 mod task_list;
 mod task_query;
@@ -199,8 +199,12 @@ pub(super) struct Workspace {
     title_input: Entity<InputState>,
     memo_input: Entity<InputState>,
     due_input: Entity<InputState>,
-    due_date_picker: Entity<DatePickerState>,
-    due_time_select: Entity<SelectState<Vec<String>>>,
+    due_calendar: Entity<CalendarState>,
+    due_popover_open: bool,
+    due_input_error: Option<String>,
+    due_focus: gpui::FocusHandle,
+    due_input_bounds: Option<gpui::Bounds<gpui::Pixels>>,
+    show_due_times: bool,
     progress_input: Entity<InputState>,
     view_name_input: Entity<InputState>,
     bulk_due_input: Entity<InputState>,
@@ -234,15 +238,9 @@ impl Workspace {
                 .multi_line(true)
                 .placeholder("メモ")
         });
-        let due_input = cx.new(|cx| {
-            InputState::new(window, cx).placeholder("未定 / YYYY-MM-DD / YYYY-MM-DD HH:MM")
-        });
-        let due_date_picker = cx.new(|cx| {
-            DatePickerState::new(window, cx)
-                .date_format("")
-                .number_of_months(1)
-        });
-        let due_time_select = cx.new(|cx| SelectState::new(due_time_options(), None, window, cx));
+        let due_input = cx.new(|cx| InputState::new(window, cx).placeholder("日付を入力・選択"));
+        let due_calendar = cx.new(|cx| CalendarState::new(window, cx));
+        let due_focus = cx.focus_handle();
         let progress_input = cx.new(|cx| InputState::new(window, cx).placeholder("進捗 0〜100"));
         let view_name_input = cx.new(|cx| InputState::new(window, cx).placeholder("保存ビュー名"));
         let bulk_due_input =
@@ -257,6 +255,9 @@ impl Workspace {
         let sidebar_resize_state = cx.new(|_| ResizableState::default());
 
         let _subscriptions = vec![
+            cx.on_focus_out(&due_focus, window, |this, _, _, cx| {
+                this.dismiss_due_popover(cx);
+            }),
             cx.subscribe(&search_input, |_, _, event: &InputEvent, cx| {
                 if matches!(event, InputEvent::Change) {
                     cx.notify();
@@ -278,38 +279,27 @@ impl Workspace {
                 }
             }),
             cx.subscribe_in(
-                &due_date_picker,
+                &due_calendar,
                 window,
-                |this, _, event: &DatePickerEvent, window, cx| {
-                    let DatePickerEvent::Change(date) = event;
-                    let current = this.due_input.read(cx).value().to_string();
-                    let value = picker_due_input_value(*date, &current);
-                    this.due_input.update(cx, |state, cx| {
-                        state.set_value(value.clone(), window, cx);
-                    });
-                    if this.selected_task.is_some() {
-                        this.update_selected_due(&value, cx);
-                    } else {
-                        this.error_message = None;
-                        cx.notify();
-                    }
-                },
-            ),
-            cx.subscribe_in(
-                &due_time_select,
-                window,
-                |this, _, event: &SelectEvent<Vec<String>>, window, cx| {
-                    let SelectEvent::Confirm(value) = event;
-                    this.apply_due_time_selection(value.as_deref(), window, cx);
+                |this, _, event: &CalendarEvent, window, cx| {
+                    let CalendarEvent::Selected(date) = event;
+                    this.select_due_date(*date, window, cx);
                 },
             ),
             cx.subscribe_in(
                 &due_input,
                 window,
                 |this, state, event: &InputEvent, window, cx| {
-                    if matches!(event, InputEvent::PressEnter { .. }) {
-                        let value = state.read(cx).value().to_string();
-                        this.update_due_from_input(&value, window, cx);
+                    let value = state.read(cx).value().to_string();
+                    match event {
+                        InputEvent::PressEnter { .. } => {
+                            this.update_due_from_input(&value, window, cx);
+                            if parse_due(&value).is_ok() {
+                                this.dismiss_due_popover(cx);
+                            }
+                        }
+                        InputEvent::Change => this.sync_due_picker_from_input(&value, window, cx),
+                        _ => {}
                     }
                 },
             ),
@@ -532,8 +522,12 @@ impl Workspace {
             title_input,
             memo_input,
             due_input,
-            due_date_picker,
-            due_time_select,
+            due_calendar,
+            due_popover_open: false,
+            due_input_error: None,
+            due_focus,
+            due_input_bounds: None,
+            show_due_times: false,
             progress_input,
             view_name_input,
             bulk_due_input,
@@ -714,6 +708,8 @@ impl Workspace {
     }
 
     fn open_new_task_form(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.dismiss_due_popover(cx);
+        self.due_input_error = None;
         if self.selected_task.is_some() {
             self.flush_pending_edits(cx);
         }
@@ -725,11 +721,8 @@ impl Workspace {
             .update(cx, |state, cx| state.set_value("", window, cx));
         self.due_input
             .update(cx, |state, cx| state.set_value("", window, cx));
-        self.due_date_picker.update(cx, |state, cx| {
+        self.due_calendar.update(cx, |state, cx| {
             state.set_date(PickerDate::Single(None), window, cx);
-        });
-        self.due_time_select.update(cx, |state, cx| {
-            state.set_selected_index(None, window, cx);
         });
         self.progress_input
             .update(cx, |state, cx| state.set_value("0", window, cx));
@@ -739,6 +732,7 @@ impl Workspace {
     }
 
     fn close_task_form(&mut self, cx: &mut Context<Self>) {
+        self.dismiss_due_popover(cx);
         if self.selected_task.is_some() {
             self.flush_pending_edits(cx);
         }
@@ -1587,6 +1581,8 @@ impl Workspace {
     }
 
     fn sync_detail_inputs(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.dismiss_due_popover(cx);
+        self.due_input_error = None;
         let Some(task) = self.selected_task().cloned() else {
             return;
         };
@@ -1600,10 +1596,9 @@ impl Workspace {
         self.due_input.update(cx, |state, cx| {
             state.set_value(format_due_input(&task.due), window, cx);
         });
-        self.due_date_picker.update(cx, |state, cx| {
+        self.due_calendar.update(cx, |state, cx| {
             state.set_date(picker_date, window, cx);
         });
-        sync_due_time_select(&self.due_time_select, &task.due, window, cx);
         self.progress_input.update(cx, |state, cx| {
             state.set_value(task.progress.to_string(), window, cx);
         });
@@ -1672,76 +1667,6 @@ impl Workspace {
         })
         .detach();
         cx.notify();
-    }
-
-    fn update_selected_due(&mut self, value: &str, cx: &mut Context<Self>) {
-        match parse_due(value) {
-            Ok(due) => {
-                self.update_selected_task(cx, |task, now| {
-                    task.due = due;
-                    task.touch(now);
-                });
-                self.error_message = None;
-            }
-            Err(message) => {
-                self.error_message = Some(message);
-                cx.notify();
-            }
-        }
-    }
-
-    fn update_due_from_input(&mut self, value: &str, window: &mut Window, cx: &mut Context<Self>) {
-        self.update_selected_due(value, cx);
-        if let Ok(due) = parse_due(value) {
-            let picker_date = picker_date_from_due(&due);
-            self.due_date_picker.update(cx, |state, cx| {
-                state.set_date(picker_date, window, cx);
-            });
-            sync_due_time_select(&self.due_time_select, &due, window, cx);
-        }
-    }
-
-    fn apply_due_time_selection(
-        &mut self,
-        time: Option<&str>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let current = self.due_input.read(cx).value().to_string();
-        match due_input_with_time(&current, time) {
-            Ok(value) => {
-                self.due_input.update(cx, |state, cx| {
-                    state.set_value(value.clone(), window, cx);
-                });
-                if self.selected_task.is_some() {
-                    self.update_selected_due(&value, cx);
-                } else {
-                    self.error_message = None;
-                    cx.notify();
-                }
-            }
-            Err(message) => {
-                self.error_message = Some(message);
-                cx.notify();
-            }
-        }
-    }
-
-    fn clear_due(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.due_input
-            .update(cx, |state, cx| state.set_value("", window, cx));
-        self.due_date_picker.update(cx, |state, cx| {
-            state.set_date(PickerDate::Single(None), window, cx);
-        });
-        self.due_time_select.update(cx, |state, cx| {
-            state.set_selected_index(None, window, cx);
-        });
-        if self.selected_task.is_some() {
-            self.update_selected_due("", cx);
-        } else {
-            self.error_message = None;
-            cx.notify();
-        }
     }
 
     fn save_selected_task_form(&mut self, cx: &mut Context<Self>) -> bool {
@@ -3202,76 +3127,6 @@ impl Workspace {
             .into_any_element()
     }
 
-    fn render_due_control(&self, cx: &mut Context<Self>) -> AnyElement {
-        let entity = cx.entity();
-        div()
-            .debug_selector(|| "due-control".to_owned())
-            .flex()
-            .flex_col()
-            .gap_2()
-            .child(section_label("納期（任意）"))
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap_2()
-                    .min_w_0()
-                    .child(Input::new(&self.due_input).w_full())
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap_2()
-                            .child(
-                                div()
-                                    .debug_selector(|| "due-date-control".to_owned())
-                                    .flex_1()
-                                    .min_w_0()
-                                    .child(
-                                        DatePicker::new(&self.due_date_picker)
-                                            .w_full()
-                                            .number_of_months(1)
-                                            .placeholder("日付を選択"),
-                                    ),
-                            )
-                            .child(
-                                div()
-                                    .debug_selector(|| "due-time-control".to_owned())
-                                    .flex_1()
-                                    .min_w_0()
-                                    .child(
-                                        Select::new(&self.due_time_select)
-                                            .w_full()
-                                            .cleanable(true)
-                                            .placeholder("時刻"),
-                                    ),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .debug_selector(|| "due-clear-control".to_owned())
-                            .w_full()
-                            .child(
-                                Button::new("clear-due")
-                                    .small()
-                                    .ghost()
-                                    .w_full()
-                                    .label("納期を未定にする")
-                                    .on_click(move |_, window, cx| {
-                                        entity.update(cx, |this, cx| this.clear_due(window, cx));
-                                    }),
-                            ),
-                    ),
-            )
-            .child(
-                div()
-                    .text_size(px(12.0))
-                    .text_color(theme::MUTED)
-                    .child("日付を選び、必要な場合だけ時刻を指定します"),
-            )
-            .into_any_element()
-    }
-
     fn render_memo_input(&self) -> AnyElement {
         div()
             .debug_selector(|| "task-memo-input".to_owned())
@@ -4221,7 +4076,7 @@ impl Render for Workspace {
                                 .size_full()
                                 .min_w_0()
                                 .overflow_x_hidden()
-                                .child(self.render_detail(cx)),
+                                .child(self.render_detail(window, cx)),
                         ),
                 )
             });
@@ -4259,6 +4114,10 @@ impl Render for Workspace {
                 }
             }))
             .on_action(cx.listener(|this, _: &CloseDetailAction, _, cx| {
+                if this.due_popover_open {
+                    this.dismiss_due_popover(cx);
+                    return;
+                }
                 this.close_task_form(cx);
                 this.show_command_palette = false;
                 cx.notify();
@@ -4477,21 +4336,6 @@ fn apply_pending_edits(
         changed = true;
     }
     Ok(changed)
-}
-
-fn sync_due_time_select(
-    select: &Entity<SelectState<Vec<String>>>,
-    due: &Due,
-    window: &mut Window,
-    cx: &mut Context<Workspace>,
-) {
-    select.update(cx, |state, cx| {
-        if let Some(time) = due_time_value(due) {
-            state.set_selected_value(&time, window, cx);
-        } else {
-            state.set_selected_index(None, window, cx);
-        }
-    });
 }
 
 fn unix_millis() -> i128 {
@@ -4718,16 +4562,9 @@ mod tests {
         );
         let due_left = f32::from(due.origin.x);
         let due_right = f32::from(due.origin.x + due.size.width);
-        for selector in ["due-date-control", "due-time-control", "due-clear-control"] {
-            let bounds = visual
-                .debug_bounds(selector)
-                .unwrap_or_else(|| panic!("{selector} should be rendered"));
-            assert!(f32::from(bounds.origin.x) >= due_left - 0.5);
-            assert!(
-                f32::from(bounds.origin.x + bounds.size.width) <= due_right + 0.5,
-                "{selector} overflowed the due control"
-            );
-        }
+        let bounds = visual.debug_bounds("due-input-control").unwrap();
+        assert!(f32::from(bounds.origin.x) >= due_left - 0.5);
+        assert!(f32::from(bounds.origin.x + bounds.size.width) <= due_right + 0.5);
         visual.update(|window, _| window.remove_window());
     }
 

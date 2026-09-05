@@ -2,7 +2,7 @@ use super::{Workspace, labeled_input, section_label, theme};
 use crate::domain::{Priority, TaskId, TaskStatus};
 use gpui::{
     AnyElement, Context, FontWeight, InteractiveElement as _, IntoElement, ParentElement as _,
-    SharedString, Styled as _, div, px,
+    SharedString, Styled as _, Window, div, px,
 };
 use gpui_component::{
     Selectable as _, Sizable as _,
@@ -14,7 +14,7 @@ use gpui_component::{
 
 // The scroll viewport owns a non-shrinking form so short windows cannot compress controls.
 impl Workspace {
-    fn render_new_task_detail(&self, cx: &mut Context<Self>) -> AnyElement {
+    fn render_new_task_detail(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let Some(draft) = self.new_task_draft.clone() else {
             return div().into_any_element();
         };
@@ -60,7 +60,7 @@ impl Workspace {
                     )
                     .child(labeled_input("タイトル", Input::new(&self.title_input)))
                     .child(labeled_input("メモ", self.render_memo_input()))
-                    .child(self.render_due_control(cx))
+                    .child(self.render_due_control(window, cx))
                     .child(section_label("状態"))
                     .child(
                         div().flex().flex_wrap().gap_2().children(
@@ -139,9 +139,9 @@ impl Workspace {
             .into_any_element()
     }
 
-    pub(super) fn render_detail(&self, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn render_detail(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         if self.new_task_draft.is_some() {
-            return self.render_new_task_detail(cx);
+            return self.render_new_task_detail(window, cx);
         }
         let Some(task) = self.selected_task().cloned() else {
             return div()
@@ -202,7 +202,7 @@ impl Workspace {
                     )
                     .child(labeled_input("タイトル", Input::new(&self.title_input)))
                     .child(labeled_input("メモ", self.render_memo_input()))
-                    .child(self.render_due_control(cx))
+                    .child(self.render_due_control(window, cx))
                     .child(section_label("状態"))
                     .child(
                         div().flex().flex_wrap().gap_2().children(
