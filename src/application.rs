@@ -77,26 +77,6 @@ impl TaskApplication {
         self.database.restore_task(id, now)
     }
 
-    pub(crate) fn save_project(&self, project: Project) -> Result<(), RepositoryError> {
-        self.database.save_project(project)
-    }
-
-    pub(crate) fn save_projects(&self, projects: Vec<Project>) -> Result<(), RepositoryError> {
-        self.database.save_projects(projects)
-    }
-
-    pub(crate) fn delete_project(&self, id: ProjectId) -> Result<(), RepositoryError> {
-        self.database.delete_project(id)
-    }
-
-    pub(crate) fn save_tag(&self, tag: Tag) -> Result<(), RepositoryError> {
-        self.database.save_tag(tag)
-    }
-
-    pub(crate) fn delete_tag(&self, id: TagId) -> Result<(), RepositoryError> {
-        self.database.delete_tag(id)
-    }
-
     pub(crate) fn save_view(&self, view: SavedView) -> Result<(), RepositoryError> {
         self.database.save_view(view)
     }
