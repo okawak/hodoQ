@@ -2057,6 +2057,9 @@ impl Workspace {
             .cloned()
             .collect::<Vec<_>>();
         tasks.sort_by(|left, right| compare_tasks(left, right, &self.sort));
+        if self.view_kind == ViewKind::List {
+            self.order_list_tasks(&mut tasks);
+        }
         tasks
     }
 

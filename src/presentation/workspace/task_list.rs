@@ -7,6 +7,9 @@ use crate::domain::{Due, GroupBy, Task};
 
 use super::{Workspace, prioritize_list_tasks, theme};
 
+#[cfg(test)]
+mod tests;
+
 #[derive(Clone)]
 enum VirtualListItem {
     Group(String),
@@ -14,8 +17,15 @@ enum VirtualListItem {
 }
 
 impl Workspace {
-    pub(super) fn render_list(&self, mut tasks: Vec<Task>, cx: &mut Context<Self>) -> AnyElement {
-        prioritize_list_tasks(&mut tasks);
+    /// Order the shared sequence before rendering or handling list interactions.
+    pub(super) fn order_list_tasks(&self, tasks: &mut [Task]) {
+        prioritize_list_tasks(tasks);
+        if let Some(group) = self.group_by {
+            tasks.sort_by_key(|task| self.task_group_label(task, group));
+        }
+    }
+
+    pub(super) fn render_list(&self, tasks: Vec<Task>, cx: &mut Context<Self>) -> AnyElement {
         let title = self.active_view_label();
         let count = tasks.len();
         let header = div()
@@ -73,11 +83,7 @@ impl Workspace {
 
         let mut items = Vec::new();
         let mut current_group = None::<String>;
-        let mut grouped_tasks = tasks;
-        if let Some(group) = self.group_by {
-            grouped_tasks.sort_by_key(|task| self.task_group_label(task, group));
-        }
-        for task in grouped_tasks {
+        for task in tasks {
             if let Some(group) = self.group_by {
                 let label = self.task_group_label(&task, group);
                 if current_group.as_deref() != Some(label.as_str()) {
