@@ -80,9 +80,7 @@ impl Workspace {
                                 .selected(view_kind == kind)
                                 .on_click(move |_, _, cx| {
                                     entity.update(cx, |this, cx| {
-                                        this.view_kind = kind;
-                                        this.settings.view_kind = kind;
-                                        cx.notify();
+                                        this.set_view_kind(kind, cx);
                                     });
                                 })
                         }),

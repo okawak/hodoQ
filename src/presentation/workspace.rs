@@ -32,6 +32,7 @@ mod data_management;
 mod due;
 mod due_control;
 mod history;
+mod preferences;
 mod shell;
 mod task_actions;
 mod task_editor;
@@ -161,6 +162,7 @@ pub(super) struct Workspace {
     selected_tasks: HashSet<TaskId>,
     active_view: SmartView,
     view_kind: ViewKind,
+    task_list_state: gpui::ListState,
     filter_statuses: HashSet<TaskStatus>,
     filter_priorities: HashSet<Priority>,
     filter_projects: HashSet<ProjectId>,
@@ -368,7 +370,7 @@ impl Workspace {
             ),
         ];
 
-        let mut initial_view_kind = settings.view_kind;
+        let initial_view_kind = settings.view_kind;
         let mut initial_sort = if settings.sort.is_empty() {
             vec![SortSpec::default()]
         } else {
@@ -412,7 +414,8 @@ impl Workspace {
         if let SmartView::Saved(id) = initial_active_view
             && let Some(saved) = snapshot.saved_views.iter().find(|view| view.id == id)
         {
-            initial_view_kind = saved.view_kind;
+            // Restore the last chosen presentation, not the saved view's preset.
+            // Explicitly opening a saved view still applies its preset in activate_view.
             initial_sort = if saved.sort.is_empty() {
                 vec![SortSpec::default()]
             } else {
@@ -480,6 +483,7 @@ impl Workspace {
             selected_tasks: HashSet::new(),
             active_view: initial_active_view,
             view_kind: initial_view_kind,
+            task_list_state: gpui::ListState::new(0, gpui::ListAlignment::Top, px(200.0)),
             filter_statuses: initial_filter_statuses,
             filter_priorities: initial_filter_priorities,
             filter_projects: initial_filter_projects,

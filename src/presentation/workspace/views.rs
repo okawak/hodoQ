@@ -566,6 +566,7 @@ impl Workspace {
                 state.set_value(due_to, window, cx);
             });
         }
+        self.persist_view_preferences(cx);
         cx.notify();
     }
 }
