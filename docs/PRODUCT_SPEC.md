@@ -842,6 +842,8 @@ hodoq/
 
 ### 15.1 単体テスト
 
+- 検証対象の実装ファイル末尾に `#[cfg(test)] mod tests { ... }` として同居させる。
+- テストのために公開範囲を拡大せず、非公開ロジックを直接検証する。
 - タスク入力値の検証
 - 状態遷移
 - 完了・再開時の日時と進捗変更
@@ -850,6 +852,7 @@ hodoq/
 
 ### 15.2 DB統合テスト
 
+- `tests/integration/main.rs` を入口とする外部テストクレートに配置し、製品の公開APIを利用する。領域別のファイルは子モジュールとしてまとめる。
 - 一時ディレクトリ上にDBを作成して実行する。
 - CRUD、論理削除、復元、タグ関連を確認する。
 - プロジェクト削除時にタスクが保持されることを確認する。
@@ -873,11 +876,12 @@ hodoq/
 - 保存失敗時の表示
 - Windows/macOSでの日本語入力
 
-GPUIで自動化できない領域は、リリースチェックリストによる手動確認を併用する。
+非公開のWorkspaceや入力状態に依存するGPUIテストは、実装ファイル内の内部テストとして保持する。テスト配置だけを目的とした公開APIの追加やソースの再取り込みは行わない。GPUIで自動化できない領域は、リリースチェックリストによる手動確認を併用する。
 
 ### 15.4 ビルド・起動確認
 
 - CIで`cargo fmt --check`、`cargo clippy --all-targets --all-features -- -D warnings`、`cargo test --all-targets --all-features`を実行する。
+- 性能テストは `cargo test --release --lib --test integration --all-features performance_ -- --ignored --test-threads=1 --nocapture` で、内部テストと結合テストの両方を最適化ビルド・直列実行で検証する。
 - Windows 11 x86_64とmacOS Apple Siliconで`cargo build --release`を実行する。
 - Windowsでは`target\release\hodoq.exe`、macOSでは`target/release/hodoq`を直接起動できることを実機確認する。
 - 新規DB、既存DB、旧スキーマDBの各状態で起動確認する。

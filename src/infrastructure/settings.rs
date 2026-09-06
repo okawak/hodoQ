@@ -118,34 +118,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn absent_view_preference_defaults_to_list() {
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("settings.json");
-        assert_eq!(AppSettings::load(&path).view_kind, ViewKind::List);
-        fs::write(&path, r#"{"active_view":"all"}"#).unwrap();
-        assert_eq!(AppSettings::load(&path).view_kind, ViewKind::List);
-    }
-
-    #[test]
-    fn corrupt_settings_fall_back_to_defaults() {
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("settings.json");
-        fs::write(&path, "not json").unwrap();
-        let settings = AppSettings::load(&path);
-        assert_eq!(settings.window.width, 1280.0);
-        assert_eq!(settings.theme, "dark");
-    }
-
-    #[test]
     fn out_of_range_settings_are_normalized() {
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("settings.json");
         let mut settings = AppSettings::default();
         settings.window.width = 10.0;
         settings.sidebar_width = 10_000.0;
         settings.sort.clear();
-        fs::write(&path, serde_json::to_vec(&settings).unwrap()).unwrap();
-        let settings = AppSettings::load(&path);
+        settings.normalize();
         assert_eq!(settings.window.width, 1280.0);
         assert_eq!(settings.sidebar_width, 380.0);
         assert_eq!(settings.sort.len(), 1);

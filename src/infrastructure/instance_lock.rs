@@ -28,21 +28,3 @@ impl Drop for InstanceLock {
         let _ = self.file.unlock();
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn second_instance_with_same_data_directory_is_rejected() {
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("hodoq.lock");
-        let first = InstanceLock::acquire(&path).unwrap();
-        assert!(matches!(
-            InstanceLock::acquire(&path),
-            Err(RepositoryError::AlreadyRunning)
-        ));
-        drop(first);
-        assert!(InstanceLock::acquire(&path).is_ok());
-    }
-}

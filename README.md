@@ -93,11 +93,22 @@ cargo run -- --data-dir ./tmp/hodoq-test
 cargo fmt --check
 cargo clippy --all-targets --all-features -- -D warnings
 cargo test --all-targets --all-features
-cargo test --release --lib --all-features performance_ -- --ignored --test-threads=1 --nocapture
+cargo test --release --lib --test integration --all-features performance_ -- --ignored --test-threads=1 --nocapture
 cargo build --release
 ```
 
 CIはWindowsとApple Silicon macOSでテストとリリースビルドを行います。10,000件の保存・読込・検索の正しさは通常のテストでも検証し、処理時間の基準（検索100msなど）は最適化済みのリリースビルドで他のテストと並列にせず測定します。性能テストは通常実行ではignoredとなりますが、上記コマンドとCIの専用ステップで必ず実行します。
+
+### テストの配置
+
+- ユニットテストは、検証対象の実装ファイル末尾の `#[cfg(test)] mod tests { ... }` にまとめます。純粋な判定・変換ロジックは、そのロジックのモジュール内で直接検証します。
+- 結合テストは `tests/integration/main.rs` を入口とし、DB永続化・バックアップ・設定ファイルなど、複数の部品が連携する動作を `hodoq` の公開API経由で検証します。領域別の子モジュールに分け、Cargoのテスト実行ファイルは1つにまとめています。
+- テスト配置のためだけに内部実装を `pub` にしたり、`include!`／`#[path]` で製品ソースを結合テストに取り込んだりしません。非公開の `Workspace` や入力状態を調べるGPUIテストは、実装と同居する内部テストとして維持します。
+- ファイルやDBを使うテストは `tempfile` で保存先を分離し、利用中の `.hodoq/` を変更しません。
+
+個別に実行する場合は `cargo test --lib`（内部テスト）と `cargo test --test integration`（結合テスト）を使います。通常の `cargo test` でも両方が実行されます。性能テストのコマンドでは `--lib --test integration` を指定し、両方のテスト対象を漏れなく実行します。
+
+配置と公開APIの境界は、[Rust公式のテスト構成](https://doc.rust-lang.org/book/ch11-03-test-organization.html)と[Cargoの複数ファイルテスト構成](https://doc.rust-lang.org/cargo/guide/project-layout.html)に従います。
 
 ### CIのキャッシュと実行方針
 
