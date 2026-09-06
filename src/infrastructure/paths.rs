@@ -182,6 +182,13 @@ mod tests {
             repository_root_from(&release),
             Some(temporary.path().to_path_buf())
         );
+        let bundle_executable = release.join("HodoQ.app").join("Contents").join("MacOS");
+        fs::create_dir_all(&bundle_executable).unwrap();
+        assert_eq!(
+            repository_root_from(&bundle_executable),
+            Some(temporary.path().to_path_buf()),
+            "an app bundle must keep using the repository's existing data directory",
+        );
     }
 
     #[test]
