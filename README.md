@@ -23,6 +23,18 @@ cargo build --release
 - Windows: `target\release\hodoq.exe`
 - macOS: `target/release/hodoq`
 
+アプリのアイコンは、ほどける糸の「Q」とタスク完了のチェックを組み合わせています。Windowsでは実行ファイルとタスクバー、macOSでは実行中のDockに表示されます。
+
+macOSでFinderから開ける、アイコン付きの `HodoQ.app` を作る場合:
+
+```sh
+cargo build --locked --release --target-dir target
+bash scripts/package-macos.sh
+open target/release/HodoQ.app
+```
+
+再ビルド後はパッケージ生成も再実行してください。`.app` は `target/release/` に置いたまま使うと、直接起動と同じリポジトリ直下の `.hodoq/` を使用します。リポジトリ外へ移動した場合は `--data-dir` の明示が必要です（例: `open /path/HodoQ.app --args --data-dir /path/to/data`）。バンドルはローカル利用用のad-hoc署名で、配布用Developer ID署名・公証は行いません。
+
 開発中は次でも起動できます。
 
 ```text

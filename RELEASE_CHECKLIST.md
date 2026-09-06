@@ -5,12 +5,16 @@
 - [ ] `cargo fmt --check`
 - [ ] `cargo clippy --all-targets --all-features -- -D warnings`
 - [ ] `cargo test --all-targets --all-features`
-- [ ] `cargo test --release --lib --all-features performance_ -- --ignored --test-threads=1 --nocapture`（性能テスト2件が実行されること）
+- [ ] `cargo test --release --lib --test integration --all-features performance_ -- --ignored --test-threads=1 --nocapture`（性能テスト2件が実行されること）
 - [ ] Windows／Apple Silicon macOSのCIで`cargo build --release`
+- [ ] macOS: `bash scripts/package-macos.sh`（Info.plist検証とad-hoc署名検証を含む）
+- [ ] Windows: `./scripts/verify-windows-icon.ps1`（実行ファイルのアイコンリソースID 1を16／32／48／256pxで読み込める）
 
 ## GUI確認（Windows 11／Apple Silicon macOS）
 
 - [ ] clone後、READMEの手順だけでビルド・直接起動できる
+- [ ] Windowsの実行ファイル／タスクバーと、macOSのDock／Finderの`.app`にQ＋チェックのアイコンが表示される
+- [ ] macOSの直接起動・`cargo run`・`.app`起動で同じDockアイコンになる
 - [ ] DBと設定がclone先の`.hodoq/`へ保存され、`target/release`からの起動でも同じ場所を使用する
 - [ ] 中央編集カードの「変更を保存」が成功するとカードが閉じ、入力エラー時は開いたままになる
 - [ ] 「その他」から絞り込み、複数選択、データ管理、取り消しを開ける

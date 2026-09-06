@@ -64,3 +64,9 @@ jobs:
         run: cargo test --locked --release --lib --test integration --all-features performance_ -- --ignored --test-threads=1 --nocapture
       - name: Release build
         run: cargo build --locked --release
+      - name: Package and verify macOS app
+        if: runner.os == 'macOS'
+        run: bash scripts/package-macos.sh
+      - name: Verify Windows application icon
+        if: runner.os == 'Windows'
+        run: ./scripts/verify-windows-icon.ps1

@@ -5,3 +5,5 @@
 *.sqlite3-shm
 *.sqlite3-wal
 .DS_Store
+# Local icon exploration; only the selected production assets are versioned.
+/design/app-icon/

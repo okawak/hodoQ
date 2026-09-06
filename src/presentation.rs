@@ -1,3 +1,5 @@
+#[cfg(target_os = "macos")]
+mod app_icon;
 mod assets;
 mod theme;
 mod workspace;
@@ -46,6 +48,8 @@ pub fn run() -> anyhow::Result<()> {
     let app = gpui::Application::new().with_assets(assets::Assets);
     app.run(move |cx: &mut App| {
         gpui_component::init(cx);
+        #[cfg(target_os = "macos")]
+        app_icon::install();
         let shortcuts = if cfg!(target_os = "macos") {
             vec![
                 KeyBinding::new("cmd-n", NewTaskAction, Some("HodoQ")),
