@@ -5,7 +5,7 @@ use gpui::{
     px,
 };
 use gpui_component::{
-    Selectable as _, Sizable as _, button::Button, scroll::ScrollableElement as _,
+    IconName, Selectable as _, Sizable as _, button::Button, scroll::ScrollableElement as _,
 };
 use time::{Date, OffsetDateTime, UtcOffset};
 
@@ -34,8 +34,10 @@ impl Workspace {
                     .child({
                         let entity = cx.entity();
                         Button::new("calendar-previous")
+                            .debug_selector(|| "calendar-previous".to_owned())
                             .small()
-                            .label("前月")
+                            .icon(IconName::ArrowLeft)
+                            .tooltip("前月")
                             .on_click(move |_, _, cx| {
                                 entity.update(cx, |this, cx| {
                                     this.calendar_month = shift_month(this.calendar_month, -1);
@@ -43,25 +45,38 @@ impl Workspace {
                                 });
                             })
                     })
-                    .child(div().font_weight(FontWeight::BOLD).child(format!(
-                        "{}年{}月",
-                        self.calendar_month.year(),
-                        self.calendar_month.month() as u8
-                    )))
+                    .child(
+                        div()
+                            .debug_selector(|| "calendar-month-label".to_owned())
+                            // Reserve space for two-digit months so navigation never shifts.
+                            .w(gpui::rems(8.0))
+                            .flex_shrink_0()
+                            .text_center()
+                            .font_weight(FontWeight::BOLD)
+                            .child(format!(
+                                "{}年{}月",
+                                self.calendar_month.year(),
+                                self.calendar_month.month() as u8
+                            )),
+                    )
                     .child({
                         let entity = cx.entity();
-                        Button::new("calendar-next").small().label("翌月").on_click(
-                            move |_, _, cx| {
+                        Button::new("calendar-next")
+                            .debug_selector(|| "calendar-next".to_owned())
+                            .small()
+                            .icon(IconName::ArrowRight)
+                            .tooltip("翌月")
+                            .on_click(move |_, _, cx| {
                                 entity.update(cx, |this, cx| {
                                     this.calendar_month = shift_month(this.calendar_month, 1);
                                     cx.notify();
                                 });
-                            },
-                        )
+                            })
                     })
                     .child({
                         let entity = cx.entity();
                         Button::new("calendar-current-month")
+                            .debug_selector(|| "calendar-current-month".to_owned())
                             .small()
                             .label("今月")
                             .on_click(move |_, _, cx| {
@@ -379,5 +394,115 @@ impl Workspace {
             )
             .child(task.title)
             .into_any_element()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        application::TaskApplication,
+        domain::ViewKind,
+        infrastructure::{AppPaths, AppSettings, InstanceLock},
+    };
+    use gpui::{AppContext as _, Modifiers, VisualTestContext, size};
+    use time::Month;
+
+    #[gpui::test]
+    fn month_navigation_keeps_buttons_anchored_and_returns_to_current_month(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = AppPaths::resolve(Some(directory.path())).unwrap();
+        let lock = InstanceLock::acquire(&paths.lock).unwrap();
+        let application = TaskApplication::start(&paths.database).unwrap();
+        let snapshot = application.load().unwrap();
+        cx.update(gpui_component::init);
+        let mut workspace = None;
+        let window = cx.add_window(|window, cx| {
+            let entity = cx.new(|cx| {
+                Workspace::new(
+                    application,
+                    snapshot,
+                    paths,
+                    AppSettings {
+                        view_kind: ViewKind::Calendar,
+                        ..AppSettings::default()
+                    },
+                    lock,
+                    false,
+                    window,
+                    cx,
+                )
+            });
+            workspace = Some(entity.clone());
+            gpui_component::Root::new(entity, window, cx)
+        });
+        let workspace = workspace.unwrap();
+        let mut visual = VisualTestContext::from_window(*window, cx);
+        let september = Date::from_calendar_date(2026, Month::September, 1).unwrap();
+        for width in [900.0, 1280.0] {
+            visual.simulate_resize(size(px(width), px(800.0)));
+            workspace.update_in(&mut visual, |this, _, cx| {
+                this.calendar_month = september;
+                cx.notify();
+            });
+            visual.run_until_parked();
+            let selectors = [
+                "calendar-previous",
+                "calendar-month-label",
+                "calendar-next",
+                "calendar-current-month",
+            ];
+            let initial = selectors.map(|selector| visual.debug_bounds(selector).unwrap());
+            // Icon-only buttons should be square, and all controls must stay visible.
+            for button in [initial[0], initial[2]] {
+                assert_eq!(button.size.width, button.size.height);
+            }
+            for bounds in initial {
+                assert!(bounds.size.width > px(0.0));
+                assert!(bounds.origin.x >= px(0.0) && bounds.right() <= px(width));
+            }
+            for pair in initial.windows(2) {
+                assert!(pair[0].right() < pair[1].left());
+            }
+
+            // Cross both the one-/two-digit boundary and December/January in each direction.
+            for (button, months) in [(initial[2], [1, 2, 3, 4]), (initial[0], [3, 2, 1, 0])] {
+                for months in months {
+                    visual.simulate_click(button.center(), Modifiers::default());
+                    visual.run_until_parked();
+                    workspace.update_in(&mut visual, |this, _, _| {
+                        assert_eq!(this.calendar_month, shift_month(september, months));
+                    });
+                    for (selector, expected) in selectors.into_iter().zip(initial) {
+                        assert_eq!(
+                            visual.debug_bounds(selector).unwrap(),
+                            expected,
+                            "{selector} moved after shifting {months} months at width {width}",
+                        );
+                    }
+                }
+            }
+
+            // Start far away so the current-month button cannot pass as a no-op.
+            workspace.update_in(&mut visual, |this, _, cx| {
+                this.calendar_month = Date::from_calendar_date(2000, Month::January, 1).unwrap();
+                cx.notify();
+            });
+            visual.run_until_parked();
+            visual.simulate_click(initial[3].center(), Modifiers::default());
+            visual.run_until_parked();
+            let offset = UtcOffset::current_local_offset().unwrap_or(UtcOffset::UTC);
+            let today = OffsetDateTime::now_utc().to_offset(offset).date();
+            workspace.update_in(&mut visual, |this, _, _| {
+                assert_eq!(
+                    this.calendar_month,
+                    Date::from_calendar_date(today.year(), today.month(), 1).unwrap(),
+                );
+            });
+            assert_eq!(visual.debug_bounds(selectors[3]).unwrap(), initial[3]);
+        }
+        visual.update(|window, _| window.remove_window());
     }
 }
