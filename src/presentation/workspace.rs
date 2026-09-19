@@ -309,13 +309,13 @@ impl Workspace {
             cx.subscribe_in(
                 &progress_input,
                 window,
-                |this, state, event: &InputEvent, _window, cx| {
+                |this, state, event: &InputEvent, window, cx| {
                     if matches!(event, InputEvent::PressEnter { .. }) {
                         let value = state.read(cx).value().to_string();
                         match value.trim().parse::<u8>() {
                             Ok(progress) if progress <= 100 => {
                                 if let Some(id) = this.selected_task {
-                                    this.set_task_progress(id, progress, cx);
+                                    this.set_task_progress(id, progress, window, cx);
                                 }
                                 this.error_message = None;
                             }

@@ -117,7 +117,7 @@ cargo test --locked --release --lib --all-features performance_ -- --ignored --t
 Windows/macOSのCI（release buildを含む）を確認する。
 検索は時刻・オフセットを固定した境界テスト、永続化は実際のin-memory SQLiteの原子性・往復テスト、画面は既存GPUIテストを用いる。
 分割をなぞるだけのテストは追加せず、挙動や不変条件を検証する。
-コミットは署名付きで作成する。PRごとに`@codex review`を依頼し、指摘の採否・根拠を記録して、修正と検証後にマージする。
+コミットの署名とPRの運用は[AGENTS.md](../AGENTS.md)に従う。PRごとに`@codex review`を依頼し、修正のたびに再レビューを依頼する。最新のコミットに対する指摘がなくなり、以前の指摘の解決とCIの成功を確認してからマージする。
 
 ## 実施した段階
 
