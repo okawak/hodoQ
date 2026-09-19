@@ -414,11 +414,11 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.update_task(id, cx, |task, now| {
+        let saved = self.update_task(id, cx, |task, now| {
             let _ = task.set_progress(progress);
             task.touch(now);
         });
-        if self.selected_task == Some(id) {
+        if saved && self.selected_task == Some(id) {
             // Explicit save reads this field. Keep presets in sync without replacing
             // drafts in the title, memo, or due inputs.
             self.progress_input.update(cx, |state, cx| {
@@ -502,22 +502,23 @@ impl Workspace {
         id: TaskId,
         cx: &mut Context<Self>,
         update: impl FnOnce(&mut Task, OffsetDateTime),
-    ) {
+    ) -> bool {
         let now = OffsetDateTime::now_utc();
         let Some(task) = self.tasks.iter_mut().find(|task| task.id == id) else {
-            return;
+            return false;
         };
         let before = task.clone();
         update(task, now);
         if before == *task {
-            return;
+            return true;
         }
         let task = task.clone();
-        if let Err(error) = self.worker.save_task(task) {
+        let saved = if let Err(error) = self.worker.save_task(task) {
             if let Some(task) = self.tasks.iter_mut().find(|task| task.id == id) {
                 *task = before;
             }
             self.set_error(error);
+            false
         } else {
             let after = self
                 .tasks
@@ -527,8 +528,10 @@ impl Workspace {
                 .expect("updated task must exist");
             self.push_task_history(vec![(Some(before), Some(after))]);
             self.status_message = "保存中…".to_owned();
-        }
+            true
+        };
         cx.notify();
+        saved
     }
 
     pub(super) fn toggle_selected_done(&mut self, cx: &mut Context<Self>) {

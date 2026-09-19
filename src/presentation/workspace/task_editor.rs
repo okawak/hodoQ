@@ -847,6 +847,35 @@ mod tests {
     }
 
     #[gpui::test]
+    fn failed_progress_preset_keeps_the_persisted_value_in_the_editor(cx: &mut TestAppContext) {
+        let (_directory, window, [id, _]) = workspace(cx);
+        window
+            .update(cx, |workspace, window, cx| {
+                workspace.select_task(id, window, cx);
+                workspace.set_task_progress(id, 25, window, cx);
+                let history_len = workspace.undo_stack.len();
+                let connection = rusqlite::Connection::open(&workspace.paths.database).unwrap();
+                connection.pragma_update(None, "user_version", 999).unwrap();
+                drop(connection);
+                workspace.worker = TaskApplication::start(&workspace.paths.database).unwrap();
+                assert!(workspace.worker.is_read_only());
+
+                workspace.set_task_progress(id, 75, window, cx);
+
+                assert_eq!(workspace.selected_task().unwrap().progress, 25);
+                assert_eq!(workspace.progress_input.read(cx).value().as_str(), "25");
+                assert_eq!(workspace.undo_stack.len(), history_len);
+                assert!(workspace.error_message.is_some());
+                workspace.close_task_form(cx);
+                workspace.select_task(id, window, cx);
+                assert_eq!(workspace.selected_task().unwrap().progress, 25);
+                assert_eq!(workspace.progress_input.read(cx).value().as_str(), "25");
+                window.remove_window();
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
     fn invalid_title_replaces_older_pending_text_and_blocks_close(cx: &mut TestAppContext) {
         let (_directory, window, [a, _]) = workspace(cx);
         window
