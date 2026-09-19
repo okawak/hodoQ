@@ -125,11 +125,14 @@ CIはWindowsとApple Silicon macOSでテストとリリースビルドを行い�
 
 ### CIのキャッシュと実行方針
 
-- CIはPRと`main`へのpushで実行します。作業ブランチへのpushとPR更新による二重実行を避け、同じPRの古い実行は新しい更新でキャンセルします。
-- [Swatinem/rust-cache](https://github.com/Swatinem/rust-cache)でCargoのダウンロード済み依存と、`target`内のdebug／releaseの依存ビルド結果を保存します。OS・アーキテクチャ・Rustバージョン・ビルド設定・依存定義でキャッシュを分離します。アプリ自身は毎回コンパイルし、キャッシュヒット時も全検証を実行します。
+- CIはPRと`main`へのpush、Actions画面からの手動実行で動きます。作業ブランチへのpushとPR更新による二重実行を避け、同じPRの古い実行は新しい更新でキャンセルします。
+- Windows/macOSのそれぞれで、`test`（Format・Clippy・通常テスト）、`performance`（releaseの性能テスト）、`release`（製品ビルド・アプリ検証）を独立したジョブとして並列実行します。性能テスト内は引き続き直列実行です。マージ前に6ジョブすべての成功を確認します。
+- [Swatinem/rust-cache](https://github.com/Swatinem/rust-cache)でCargoのダウンロード済み依存と、各ジョブが使う`target`内の依存ビルド結果を保存します。ジョブID・ランナーイメージ・OS・アーキテクチャ・Rustバージョン・ビルド設定・依存定義でキャッシュを分離し、先に完了した別用途のジョブが不完全なキャッシュを確定する競合を避けます。アプリ自身は毎回コンパイルし、キャッシュヒット時も全検証を実行します。
 - キャッシュActionはインストール済みの全Rustバージョンをキーに含めるため、使い捨てのCIランナーでは使用中のツールチェーンを確認してから、それ以外だけを削除します。ランナーの既定Rust更新による不要なキャッシュ失効を防ぎ、ローカルのRust環境には影響しません。
 - 成功した実行だけがキャッシュを保存します。PRは`main`のキャッシュを利用でき、PR内の再実行でも自身のキャッシュを利用できます。`main`の実行はキャッシュ作成のため途中キャンセルしません。
+- PRを閉じたときは、そのPRの`refs/pull/<番号>/merge`だけを対象にキャッシュを削除します。`main`や他のPRのキャッシュを残し、容量を圧迫する終了済みPRのキャッシュを減らします。この処理は`pull_request_target`で動きますが、PRのコードを取得・実行せず、権限はキャッシュ削除用の`actions: write`だけを付与します。
 - CIだけ通常ビルドのデバッグ情報を行番号中心に抑え、再利用しないインクリメンタル生成物を無効化します。通常テストのdebug assertion／overflow check、リリース最適化、性能基準は変更しません。依存解決には`--locked`を使用します。
-- 初回やRust更新後、キャッシュ失効後は再ビルドが必要です。効果の確認は同じPRのCIを再実行し、「Rust cache」の復元結果と各ステップの時間を比較してください。キャッシュの問題を切り分ける場合はGitHub ActionsのCaches画面で対象エントリを削除して再実行できます。
+- [GitHubのキャッシュ仕様](https://docs.github.com/en/actions/reference/workflows-and-actions/dependency-caching)では、7日以上アクセスされないキャッシュは削除されます。初回やRust更新後、キャッシュ失効後は再ビルドが必要です。並列化により待ち時間を短縮しますが、キャッシュがない場合はジョブ間で共通依存を重複ビルドするため、ランナーの総使用時間やキャッシュ容量は増えます。
+- 効果の確認は同じPR・コミットのCIを再実行し、各ジョブの「Rust cache」の復元結果、ジョブ時間、全体の完了時間を比較してください。開発再開時に事前作成する場合は、Actions画面から`main`のCIを手動実行できます。キャッシュの問題を切り分ける場合はGitHub ActionsのCaches画面で対象エントリを削除して再実行できます。
 
 GUIの実機確認項目は [RELEASE_CHECKLIST.md](./RELEASE_CHECKLIST.md)、詳細仕様は [docs/PRODUCT_SPEC.md](./docs/PRODUCT_SPEC.md)、アーキテクチャは [docs/DESIGN.md](./docs/DESIGN.md) を参照してください。

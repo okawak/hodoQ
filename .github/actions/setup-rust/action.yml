@@ -1,0 +1,42 @@
+name: Set up Rust and dependency cache
+description: Install the pinned toolchain and restore a cache isolated by runner and validation job.
+
+inputs:
+  runner-image:
+    description: Runner image name, used in addition to rust-cache's job, host and toolchain keys.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Install the pinned Rust toolchain
+      shell: bash
+      # rustup reads the channel and components from rust-toolchain.toml.
+      run: rustup show active-toolchain
+    - name: Verify Apple Silicon runner
+      if: runner.os == 'macOS'
+      shell: bash
+      run: test "$(uname -m)" = "arm64"
+    - name: Keep only the active Rust toolchain
+      shell: bash
+      # rust-cache hashes every installed toolchain, including unused runner defaults.
+      run: |
+        active_toolchain="$(rustup show active-toolchain | cut -d ' ' -f 1)"
+        active_toolchain="${active_toolchain%$'\r'}"
+        test -n "$active_toolchain"
+        rustup run "$active_toolchain" rustc --version
+        installed_toolchains="$(rustup toolchain list --quiet)"
+        while IFS= read -r toolchain; do
+          toolchain="${toolchain%$'\r'}"
+          if [[ -n "$toolchain" && "$toolchain" != "$active_toolchain" ]]; then
+            rustup toolchain uninstall "$toolchain"
+          fi
+        done <<< "$installed_toolchains"
+    - name: Rust cache
+      uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      with:
+        # Job IDs separate debug tests, release tests and the production release build.
+        # A shared key would let the first finisher save an incomplete cache for others.
+        prefix-key: v1-parallel
+        key: ${{ inputs.runner-image }}
+        cache-bin: "false"
