@@ -1,0 +1,45 @@
+name: Clean up closed PR caches
+
+on:
+  pull_request_target:
+    types: [closed]
+  # A CI run can save caches after the PR has already closed. Sweep again only
+  # after its post-job cache uploads finish, including cancelled/failed runs.
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+
+permissions:
+  actions: write
+  pull-requests: read
+
+# Serialize deletions. Each execution sweeps all closed PRs, so replacing an
+# older pending execution does not lose that PR's cleanup event.
+concurrency:
+  group: cleanup-pr-cache
+  cancel-in-progress: false
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    steps:
+      # This privileged workflow never checks out or executes code from the PR.
+      - name: Delete merge-ref caches belonging to closed PRs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          # Discover refs from the cache API: workflow_run.pull_requests can be
+          # empty for forks or closed PRs. Never infer a PR from a branch name.
+          refs="$(gh api "repos/$GH_REPO/actions/caches?per_page=100" \
+            --paginate --jq '.actions_caches[].ref' | sort -u)"
+          while IFS= read -r ref; do
+            if [[ "$ref" =~ ^refs/pull/([0-9]+)/merge$ ]]; then
+              pr_number="${BASH_REMATCH[1]}"
+              state="$(gh api "repos/$GH_REPO/pulls/$pr_number" --jq '.state')"
+              if [[ "$state" == closed ]]; then
+                gh cache delete --all --ref "$ref" --succeed-on-no-caches
+              fi
+            fi
+          done <<< "$refs"

@@ -111,10 +111,10 @@ CIは`rustup show active-toolchain`で同ファイルのツールチェーンを
 cargo fmt --check
 cargo clippy --locked --all-targets --all-features -- -D warnings
 cargo test --locked --all-targets --all-features
-cargo test --locked --release --lib --all-features performance_ -- --ignored --test-threads=1 --nocapture
+cargo test --locked --release --lib --test integration --all-features performance_ -- --ignored --test-threads=1 --nocapture
 ```
 
-Windows/macOSのCI（release buildを含む）を確認する。
+Windows/macOSのCI（通常テスト・性能テスト・release buildを並列に実行する6ジョブ）をすべて確認する。キャッシュの分離・削除・計測方法は[README.md](../README.md#ciのキャッシュと実行方針)を参照する。
 検索は時刻・オフセットを固定した境界テスト、永続化は実際のin-memory SQLiteの原子性・往復テスト、画面は既存GPUIテストを用いる。
 分割をなぞるだけのテストは追加せず、挙動や不変条件を検証する。
 コミットの署名とPRの運用は[AGENTS.md](../AGENTS.md)に従う。PRごとに`@codex review`を依頼し、修正のたびに再レビューを依頼する。最新のコミットに対する指摘がなくなり、以前の指摘の解決とCIの成功を確認してからマージする。
