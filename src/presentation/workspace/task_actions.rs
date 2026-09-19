@@ -407,11 +407,24 @@ impl Workspace {
         });
     }
 
-    pub(super) fn set_task_progress(&mut self, id: TaskId, progress: u8, cx: &mut Context<Self>) {
+    pub(super) fn set_task_progress(
+        &mut self,
+        id: TaskId,
+        progress: u8,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.update_task(id, cx, |task, now| {
             let _ = task.set_progress(progress);
             task.touch(now);
         });
+        if self.selected_task == Some(id) {
+            // Explicit save reads this field. Keep presets in sync without replacing
+            // drafts in the title, memo, or due inputs.
+            self.progress_input.update(cx, |state, cx| {
+                state.set_value(progress.to_string(), window, cx);
+            });
+        }
     }
 
     pub(super) fn move_to_trash(&mut self, id: TaskId, cx: &mut Context<Self>) {

@@ -268,12 +268,13 @@ impl Workspace {
                             .children([0, 25, 50, 75, 100].into_iter().map(|progress| {
                                 let entity = cx.entity();
                                 Button::new(SharedString::from(format!("progress-{progress}")))
+                                    .debug_selector(move || format!("task-progress-{progress}"))
                                     .small()
                                     .label(format!("{progress}%"))
                                     .selected(task.progress == progress)
-                                    .on_click(move |_, _, cx| {
+                                    .on_click(move |_, window, cx| {
                                         entity.update(cx, |this, cx| {
-                                            this.set_task_progress(id, progress, cx);
+                                            this.set_task_progress(id, progress, window, cx);
                                         });
                                     })
                             })),
@@ -690,7 +691,7 @@ mod tests {
         application::TaskApplication,
         infrastructure::{AppPaths, AppSettings, InstanceLock},
     };
-    use gpui::{TestAppContext, WindowHandle};
+    use gpui::{Modifiers, TestAppContext, VisualTestContext, WindowHandle, size};
 
     fn workspace(
         cx: &mut TestAppContext,
@@ -721,6 +722,128 @@ mod tests {
             )
         });
         (directory, window, ids)
+    }
+
+    #[gpui::test]
+    fn progress_presets_survive_explicit_save_and_reopen(cx: &mut TestAppContext) {
+        let (_directory, window, [id, _]) = workspace(cx);
+        let mut visual = VisualTestContext::from_window(*window, cx);
+        visual.simulate_resize(size(px(1200.), px(1400.)));
+
+        for (progress, selector) in [
+            (25, "task-progress-25"),
+            (50, "task-progress-50"),
+            (75, "task-progress-75"),
+            (100, "task-progress-100"),
+            (0, "task-progress-0"),
+        ] {
+            window
+                .update(&mut visual, |workspace, window, cx| {
+                    workspace.select_task(id, window, cx);
+                    workspace.title_input.update(cx, |input, cx| {
+                        input.set_value("edited title", window, cx);
+                    });
+                    workspace.memo_input.update(cx, |input, cx| {
+                        input.set_value("edited memo", window, cx);
+                    });
+                    workspace.due_input.update(cx, |input, cx| {
+                        input.set_value("2026-09-20", window, cx);
+                    });
+                })
+                .unwrap();
+            visual.run_until_parked();
+            let preset = visual.debug_bounds(selector).unwrap();
+            visual.simulate_click(preset.center(), Modifiers::default());
+            window
+                .update(&mut visual, |workspace, _, cx| {
+                    assert_eq!(
+                        workspace.progress_input.read(cx).value().as_str(),
+                        progress.to_string()
+                    );
+                    assert_eq!(
+                        workspace.title_input.read(cx).value().as_str(),
+                        "edited title"
+                    );
+                    assert_eq!(
+                        workspace.memo_input.read(cx).value().as_str(),
+                        "edited memo"
+                    );
+                    assert_eq!(workspace.due_input.read(cx).value().as_str(), "2026-09-20");
+                })
+                .unwrap();
+            let save = visual.debug_bounds("task-save-button").unwrap();
+            visual.simulate_click(save.center(), Modifiers::default());
+
+            window
+                .update(&mut visual, |workspace, window, cx| {
+                    assert!(workspace.selected_task.is_none());
+                    let saved = workspace.worker.load().unwrap();
+                    let saved_task = saved.tasks.iter().find(|task| task.id == id).unwrap();
+                    assert_eq!(
+                        saved_task.progress, progress,
+                        "explicit save must keep the clicked progress preset"
+                    );
+                    assert_eq!(saved_task.title, "edited title");
+                    assert_eq!(saved_task.memo, "edited memo");
+                    assert_eq!(saved_task.due, parse_due("2026-09-20").unwrap());
+                    workspace.select_task(id, window, cx);
+                    assert_eq!(workspace.selected_task().unwrap().progress, progress);
+                    assert_eq!(
+                        workspace.progress_input.read(cx).value().as_str(),
+                        progress.to_string()
+                    );
+                })
+                .unwrap();
+        }
+        visual.update(|window, _| window.remove_window());
+    }
+
+    #[gpui::test]
+    fn direct_progress_edit_after_preset_is_validated_and_saved(cx: &mut TestAppContext) {
+        let (_directory, window, [id, other]) = workspace(cx);
+        window
+            .update(cx, |workspace, window, cx| {
+                workspace.select_task(id, window, cx);
+                workspace.set_task_progress(id, 75, window, cx);
+                workspace.progress_input.update(cx, |input, cx| {
+                    input.set_value("37", window, cx);
+                });
+                // Updating another task must not replace the selected task's draft.
+                workspace.set_task_progress(other, 50, window, cx);
+                assert_eq!(workspace.progress_input.read(cx).value().as_str(), "37");
+                assert!(workspace.save_and_close_selected_task(cx));
+                let saved = workspace.worker.load().unwrap();
+                assert_eq!(
+                    saved
+                        .tasks
+                        .iter()
+                        .find(|task| task.id == id)
+                        .unwrap()
+                        .progress,
+                    37
+                );
+                assert_eq!(
+                    saved
+                        .tasks
+                        .iter()
+                        .find(|task| task.id == other)
+                        .unwrap()
+                        .progress,
+                    50
+                );
+
+                workspace.select_task(id, window, cx);
+                workspace.progress_input.update(cx, |input, cx| {
+                    input.set_value("101", window, cx);
+                });
+                assert!(!workspace.save_and_close_selected_task(cx));
+                assert_eq!(workspace.selected_task, Some(id));
+                assert_eq!(workspace.selected_task().unwrap().progress, 37);
+                assert_eq!(workspace.progress_input.read(cx).value().as_str(), "101");
+                assert!(workspace.error_message.is_some());
+                window.remove_window();
+            })
+            .unwrap();
     }
 
     #[gpui::test]
